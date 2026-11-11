@@ -49,9 +49,12 @@ def main():
         for name in ("numpy", "scipy", "sklearn", "hdbscan", "umap", "soundfile", "PIL", "matplotlib",
                      "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets", "PySide6.QtMultimedia",
                      "PySide6.QtNetwork", "PySide6.QtSvg", "PySide6.QtOpenGLWidgets", "PySide6.QtTest",
-                     "thesis_analysis.annotation_desktop"):
+                     "syllafolio.annotation_desktop", "syllafolio.acoustics.config",
+                     "syllafolio.acoustics.audio_processor", "syllafolio.acoustics.log_mel"):
             module = importlib.import_module(name); imported[name] = str(getattr(module, "__file__", "built-in"))
-        assert Path(imported["thesis_analysis.annotation_desktop"]).resolve().is_relative_to(ROOT / "app/src")
+        for name, path in imported.items():
+            if name.startswith("syllafolio."):
+                assert Path(path).resolve().is_relative_to(ROOT / "app/src/syllafolio")
         registry = ROOT / "app/configs/annotation_manual/test_material_hashes.json"
         assert registry.is_file()
         report["imports"] = imported

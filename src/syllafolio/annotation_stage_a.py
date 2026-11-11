@@ -7,18 +7,13 @@ from __future__ import annotations
 
 import copy
 from datetime import datetime, timezone
-from functools import lru_cache
 import hashlib
-import importlib
 import importlib.metadata
-import importlib.util
 import json
 from pathlib import Path
 import re
 import shutil
-import sys
 from tempfile import TemporaryDirectory
-import types
 
 import numpy as np
 import soundfile as sf
@@ -31,7 +26,6 @@ PRESET_ID = "stage-a-existing-105d-umap10-hdbscan-leaf-v1"
 LIMITS = {"max_items": 5000, "max_total_audio_bytes": 2 * 1024 * 1024 * 1024,
           "minimum_sample_rate_hz": 32000, "minimum_frames": 8,
           "maximum_segment_seconds": 30.0}
-CODE_DIR = Path(__file__).resolve().parents[2] / "workflows/04_syllable_typing/code"
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
 INPUT_FORMATS = {".wav": "WAV", ".flac": "FLAC", ".mp3": "MP3", ".ogg": "Ogg Vorbis",
                  ".aif": "AIFF", ".aiff": "AIFF"}
@@ -365,23 +359,6 @@ def _stage_source(source_dir, dest, scratch, cancelled=None):
     return _inspect(dest, scratch, cancelled)[3]
 
 
-@lru_cache(maxsize=1)
-def _feature_functions():
-    """从现行04源码加载原函数，不复制公式，也不执行历史分类／标签任务。"""
-    package_name = "thesis_analysis._annotation_feature_agent"
-    package = types.ModuleType(package_name)
-    package.__path__ = [str(CODE_DIR / "agent")]
-    sys.modules.setdefault(package_name, package)
-    configuration = importlib.import_module(package_name + ".config")
-    audio = importlib.import_module(package_name + ".audio_processor")
-    module_name = "thesis_analysis._annotation_logmel_source"
-    spec = importlib.util.spec_from_file_location(module_name, CODE_DIR / "prepare_unmapped_macro_review.py")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return configuration.Config, audio.AudioProcessor, module.log_mel_patch
-
-
 def _cancel(callback):
     if callback and callback():
         raise StageAError("CANCELLED", "Import cancellation was requested; no complete candidate version was published.")
@@ -443,11 +420,12 @@ def _prepare_stage_a(source_dir, output_dir, progress, cancelled, plan_only, scr
     ids = [r["item_id"] for r in rows]
     versions = _versions(plan["source_fingerprint"])
     _progress(progress, "features", "Initializing and extracting 105D and log-mel features", 0, len(rows))
-    Config, Processor, log_mel_patch = _feature_functions()
-    config = Config()
+    from .acoustics import audio_processor, config as feature_config, log_mel
+
+    config = feature_config.Config()
     config.audio.sample_rate = plan["sample_rate_hz"]
     config.feature.feature_types = ["mfcc", "mfcc_delta", "spectral", "temporal", "amplitude"]
-    processor = Processor(config)
+    processor = audio_processor.AudioProcessor(config)
     _require(processor.get_feature_names() == assistance.FEATURE_NAMES,
              "FEATURE_LAYOUT", "The 105D fields of the shared feature extractor have changed.")
     features, patches, items, parent_map = [], [], [], {}
@@ -457,7 +435,7 @@ def _prepare_stage_a(source_dir, output_dir, progress, cancelled, plan_only, scr
         _require(pcm_sha == row["decoded_pcm_sha256"], "INPUT_CHANGED", "The frozen syllable PCM has changed.")
         try:
             vector = processor.extract_features(waveform, sr=rate)
-            patch = log_mel_patch(waveform, rate).ravel()
+            patch = log_mel.log_mel_patch(waveform, rate).ravel()
         except Exception as exc:
             raise StageAError("FEATURE_EXTRACTION_FAILED", f"{row['item_id']}: feature extraction failed; the item was not removed.") from exc
         _require(vector.shape == (105,) and patch.shape == (2048,)
@@ -513,8 +491,9 @@ def _prepare_stage_a(source_dir, output_dir, progress, cancelled, plan_only, scr
     manifest = {"schema_version": "annotation-acoustics-input-v1", **versions,
                 "feature_names": assistance.FEATURE_NAMES, "feature_item_ids": ids,
                 "global_fit_ids": ids, "items": items}
-    source_paths = [Path(__file__), Path(__file__).with_name("annotation_source_registry.py"), Path(assistance.__file__), CODE_DIR / "agent/config.py",
-                    CODE_DIR / "agent/audio_processor.py", CODE_DIR / "prepare_unmapped_macro_review.py"]
+    source_paths = [Path(__file__), Path(__file__).with_name("annotation_source_registry.py"),
+                    Path(assistance.__file__), Path(feature_config.__file__),
+                    Path(audio_processor.__file__), Path(log_mel.__file__)]
     packages = ["numpy", "scipy", "scikit-learn", "librosa", "soundfile", "umap-learn", "hdbscan"]
     if any(row["pcm_path"] != row["path"] or row["parent_pcm_path"] != row["parent"] for row in rows):
         source_paths.append(Path(__file__).with_name("annotation_audio_decode.py"))

@@ -6,10 +6,12 @@ import unittest
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from thesis_analysis.annotation_assistant_contracts import ContractBundle
-from thesis_analysis.annotation_material_origin import classify_material
-from thesis_analysis.annotation_stage_a import _feature_functions
-from thesis_analysis.ei_b_assistance import FEATURE_NAMES
+from syllafolio.annotation_assistant_contracts import ContractBundle
+from syllafolio.annotation_material_origin import classify_material
+from syllafolio.acoustics.audio_processor import AudioProcessor
+from syllafolio.acoustics.config import Config
+from syllafolio.acoustics.log_mel import log_mel_patch
+from syllafolio.ei_b_assistance import FEATURE_NAMES
 
 
 class RuntimeInputs(unittest.TestCase):
@@ -18,12 +20,11 @@ class RuntimeInputs(unittest.TestCase):
         self.assertEqual(classify_material(["0" * 64])["kind"], "unverified")
 
     def test_extract_acoustic_views_from_memory(self):
-        config_type, processor_type, log_mel_patch = _feature_functions()
-        config = config_type()
+        config = Config()
         rate = 48000
         config.audio.sample_rate = rate
         config.feature.feature_types = ["mfcc", "mfcc_delta", "spectral", "temporal", "amplitude"]
-        processor = processor_type(config)
+        processor = AudioProcessor(config)
         t = np.arange(rate // 4) / rate
         samples = (.05 * np.sin(2 * np.pi * 1800 * t) * np.hanning(t.size)).astype("float32")
         features = processor.extract_features(samples, sr=rate)

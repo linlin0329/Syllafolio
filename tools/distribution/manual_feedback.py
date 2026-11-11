@@ -49,7 +49,7 @@ def create_dialog(parent=None):
 
 
 def save_result(root, choices, notes):
-    from thesis_analysis.annotation_desktop_reports import collect_feedback
+    from syllafolio.annotation_desktop_reports import collect_feedback
     value = {"native_windows_process": sys.platform == "win32", "platform": platform.platform(),
              "checks": {key: control.currentData() for key, control in choices.items()},
              "notes": notes.toPlainText(), "recorded_at": datetime.now().astimezone().isoformat(),
@@ -64,8 +64,8 @@ def main():
     from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
     QLocale.setDefault(QLocale("en_US"))
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_DontUseNativeDialogs, True)
-    from thesis_analysis.annotation_desktop_theme import apply_light_theme
-    from thesis_analysis.annotation_desktop_diagnostics import DesktopDiagnostics
+    from syllafolio.annotation_desktop_theme import apply_light_theme
+    from syllafolio.annotation_desktop_diagnostics import DesktopDiagnostics
     diagnostics = DesktopDiagnostics(config["diagnostics_dir"])
     application = QApplication.instance() or QApplication([])
     apply_light_theme(application)

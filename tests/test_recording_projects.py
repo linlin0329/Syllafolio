@@ -11,9 +11,9 @@ import numpy as np
 import soundfile as sf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from thesis_analysis.annotation_batch_acoustics import prepare_review
-from thesis_analysis.annotation_desktop_project import open_project
-from thesis_analysis.annotation_interval_import import open_preview, create_interval_project
+from syllafolio.annotation_batch_acoustics import prepare_review
+from syllafolio.annotation_desktop_project import open_project
+from syllafolio.annotation_interval_import import open_preview, create_interval_project
 
 
 class RecordingImport(unittest.TestCase):
@@ -131,7 +131,7 @@ class RecordingImport(unittest.TestCase):
         self.assertFalse((self.root / "cancelled").exists())
 
     def test_mp3_recording_is_previewed_and_frozen_on_the_same_timeline(self):
-        from thesis_analysis.annotation_audio_decode import decode_to_wave
+        from syllafolio.annotation_audio_decode import decode_to_wave
         compressed = self.root / "parent.mp3"
         sf.write(compressed, self.samples[30*self.rate:], self.rate)
         reference = self.root / "reference.wav"
@@ -161,7 +161,7 @@ class RecordingImport(unittest.TestCase):
 
         target = self.root / "permanent"
         with patch.object(TemporaryDirectory, "cleanup", locked), self.assertLogs(
-                "thesis_analysis.annotation_interval_import", level="WARNING"):
+                "syllafolio.annotation_interval_import", level="WARNING"):
             with create_interval_project(preview, 0, False, target) as project:
                 preview.close()
                 self.assertEqual(project.metadata["status"], "ready")

@@ -22,8 +22,8 @@ sys.dont_write_bytecode = True
 VERSION = "0.1.0-lite1"
 TOOLS = Path(__file__).resolve().parent
 RUNTIME_PREFIXES = ("_runtime/", "site-packages/")
-APP_FOLDERS = ("src/thesis_analysis", "configs/annotation_assistant",
-               "configs/annotation_manual", "workflows/04_syllable_typing/code")
+APP_FOLDERS = ("src/syllafolio", "configs/annotation_assistant",
+               "configs/annotation_manual")
 
 
 def io_path(path):
@@ -75,7 +75,7 @@ def regular_file(path, root):
 
 
 def load_protocol(repository):
-    path = repository / "src/thesis_analysis/annotation_desktop_installation.py"
+    path = repository / "src/syllafolio/annotation_desktop_installation.py"
     regular_file(path, repository)
     spec = importlib.util.spec_from_file_location("_syllafolio_build_lease", path)
     module = importlib.util.module_from_spec(spec)
@@ -151,7 +151,7 @@ def application_inputs(repository):
         base = repository / folder
         if not base.is_dir():
             raise ValueError("Missing repository runtime folder: " + folder)
-        suffixes = {".py"} if folder.startswith(("src/", "workflows/")) else {".json", ".md"}
+        suffixes = {".py"} if folder.startswith("src/") else {".json", ".md"}
         for path in sorted(base.rglob("*")):
             if path.is_file() and path.suffix.lower() in suffixes:
                 relative = path.relative_to(repository).as_posix()
@@ -161,7 +161,9 @@ def application_inputs(repository):
                 if path.name in {"protocol_source_map.json"} or path.name.startswith("demo_"):
                     raise ValueError("Private/source-excerpt or demo config must be removed before building: " + relative)
                 result[relative] = digest(path)
-    for required in ("src/thesis_analysis/annotation_desktop.py", "configs/annotation_manual/test_material_hashes.json",
+    for required in ("src/syllafolio/annotation_desktop.py", "src/syllafolio/acoustics/__init__.py",
+                     "src/syllafolio/acoustics/config.py", "src/syllafolio/acoustics/audio_processor.py",
+                     "src/syllafolio/acoustics/log_mel.py", "configs/annotation_manual/test_material_hashes.json",
                      "configs/annotation_assistant/p1/preset.json"):
         if required not in result:
             raise ValueError("Missing required runtime input: " + required)
@@ -199,7 +201,7 @@ def assemble(repository, seed, destination, runtime_lock, dependencies, inputs, 
     for source, target in (("annotation_desktop_installation.py", "installation_lease.py"),
                            ("annotation_desktop_runtime.py", "runtime_paths.py"),
                            ("annotation_desktop_reports.py", "prototype_reports.py")):
-        copy(repository / "src/thesis_analysis" / source, target)
+        copy(repository / "src/syllafolio" / source, target)
     for source in sorted((TOOLS / "distribution").iterdir()):
         if source.is_file():
             regular_file(source, TOOLS)
@@ -220,7 +222,7 @@ def assemble(repository, seed, destination, runtime_lock, dependencies, inputs, 
         "runtime_files": len(runtime_lock["files"]), "runtime_policy": runtime_lock["policy"],
         "runtime_configuration_rewrite": "_runtime/python312._pth; app/src and app relative paths only",
         "application_materials": False, "included_user_projects": False, "included_acceptance_outputs": False,
-        "application_source": "This repository's src/configs/workflows whitelist only; no seed application files."})
+        "application_source": "This repository's src/syllafolio and configs whitelist only; no seed application files."})
     build = {"schema": "syllafolio-windows-prototype-build-v1", "version": VERSION, "target": "Windows x64",
         "python_version": runtime_lock["python_version"], "edition": "Lite", "default_start": "blank",
         "included_business_data": False, "built_on": sys.platform, "windows_execution_verified": False,

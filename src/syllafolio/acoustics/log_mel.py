@@ -1,4 +1,4 @@
-"""Fixed 64 x 32 log-mel patch kernel retained at its compatible import path."""
+"""Compute the fixed 64 x 32 log-mel patch used in syllable review."""
 from __future__ import annotations
 
 import librosa

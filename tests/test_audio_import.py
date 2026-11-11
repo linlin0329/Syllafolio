@@ -9,11 +9,11 @@ import numpy as np
 import soundfile as sf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from thesis_analysis.annotation_batch_acoustics import prepare_review
-from thesis_analysis.annotation_audio_decode import decode_to_wave
-from thesis_analysis.annotation_desktop_project import DATASET_RELATIVE, create_project, open_project
-from thesis_analysis.annotation_desktop_stage_a import inspect_input
-from thesis_analysis.annotation_stage_a import SOURCE_SCHEMA, StageAError, inspect_source, stage_source
+from syllafolio.annotation_batch_acoustics import prepare_review
+from syllafolio.annotation_audio_decode import decode_to_wave
+from syllafolio.annotation_desktop_project import DATASET_RELATIVE, create_project, open_project
+from syllafolio.annotation_desktop_stage_a import inspect_input
+from syllafolio.annotation_stage_a import SOURCE_SCHEMA, StageAError, inspect_source, stage_source
 
 
 class AudioImport(unittest.TestCase):

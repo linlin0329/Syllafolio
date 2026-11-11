@@ -3994,7 +3994,7 @@ def main(argv=None):
     parser.add_argument("--project", type=Path, help="Open an existing desktop project")
     parser.add_argument("--smoke-output", type=Path, help="Write a limited startup report and close without annotating")
     args = parser.parse_args(argv)
-    QLocale.setDefault(QLocale(QLocale.Language.English, QLocale.Territory.UnitedStates))
+    QLocale.setDefault(QLocale("en_US"))
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_DontUseNativeDialogs, True)
     application = QApplication.instance() or QApplication(sys.argv[:1])
     application.setApplicationName("Syllafolio Desktop Prototype")

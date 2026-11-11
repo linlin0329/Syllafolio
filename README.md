@@ -28,6 +28,8 @@ Both input routes accept mono WAV, FLAC, MP3, Ogg Vorbis and AIFF (`.aif`/`.aiff
 
 Use Windows x64 with CPython 3.12.10. Run these commands from the repository root:
 
+The application package is `src/syllafolio`; its bundled acoustic kernels are in `src/syllafolio/acoustics`. `run.py` starts this package directly. No separate workflow checkout is required.
+
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --only-binary=:all: --require-hashes -r requirements.txt

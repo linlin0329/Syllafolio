@@ -37,8 +37,8 @@ def main():
     settings.mkdir(parents=True, exist_ok=True)
     QSettings.setDefaultFormat(QSettings.Format.IniFormat)
     QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(settings))
-    from thesis_analysis import annotation_desktop as desktop
-    if not Path(desktop.__file__).resolve().is_relative_to(ROOT / "app/src"):
+    from syllafolio import annotation_desktop as desktop
+    if not Path(desktop.__file__).resolve().is_relative_to(ROOT / "app/src/syllafolio"):
         raise RuntimeError("Application source must come from this portable package.")
     build = json.loads((ROOT / "BUILD_INFO.json").read_text(encoding="utf-8"))
     window = desktop.MainWindow()

@@ -5,7 +5,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from thesis_analysis.annotation_interval_formats import (
+from syllafolio.annotation_interval_formats import (
     AnnotationFormatError, detect_format, parse_annotations,
 )
 

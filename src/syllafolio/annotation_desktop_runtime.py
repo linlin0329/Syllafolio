@@ -2,7 +2,7 @@
 
 This module uses only the standard library. The Windows bundle copies these
 exact bytes to ``runtime_paths.py`` so sitecustomize can configure paths without
-preloading the thesis_analysis package or a particular source checkout.
+preloading the syllafolio package or a particular source checkout.
 """
 from __future__ import annotations
 

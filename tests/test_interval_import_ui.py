@@ -15,9 +15,9 @@ from PySide6.QtCore import QEventLoop, QSettings, QTimer, Qt
 from PySide6.QtWidgets import QApplication, QDialog, QPushButton
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from thesis_analysis import annotation_desktop_interval_import as ui
-from thesis_analysis.annotation_desktop import MainWindow, ProjectContractDialog
-from thesis_analysis.annotation_interval_import import open_preview
+from syllafolio import annotation_desktop_interval_import as ui
+from syllafolio.annotation_desktop import MainWindow, ProjectContractDialog
+from syllafolio.annotation_interval_import import open_preview
 
 
 def wait_for(predicate, seconds=15):
@@ -224,10 +224,10 @@ item []:
     def test_destination_and_contract_cancel_do_not_create_project(self):
         dialog = self.dialog(); self.loaded(dialog)
         destination = self.root / "not-created"
-        with patch("thesis_analysis.annotation_desktop.QFileDialog.getSaveFileName", return_value=("", "")):
+        with patch("syllafolio.annotation_desktop.QFileDialog.getSaveFileName", return_value=("", "")):
             dialog.confirm_button.click()
         self.assertIsNotNone(dialog.preview)
-        with patch("thesis_analysis.annotation_desktop.QFileDialog.getSaveFileName", return_value=(str(destination), "")), patch.object(ProjectContractDialog, "exec", return_value=QDialog.DialogCode.Rejected):
+        with patch("syllafolio.annotation_desktop.QFileDialog.getSaveFileName", return_value=(str(destination), "")), patch.object(ProjectContractDialog, "exec", return_value=QDialog.DialogCode.Rejected):
             dialog.confirm_button.click()
         self.assertFalse(destination.exists())
         self.assertTrue(dialog.isVisible())
@@ -242,7 +242,7 @@ item []:
             contract.operator.setText("ENGINEERING_ONLY")
             contract.budget.setValue(3600)
             return QDialog.DialogCode.Accepted
-        with patch("thesis_analysis.annotation_desktop.QFileDialog.getSaveFileName", return_value=(str(destination), "")), patch.object(ProjectContractDialog, "exec", accept_contract), patch.object(preview, "close", wraps=preview.close) as closed:
+        with patch("syllafolio.annotation_desktop.QFileDialog.getSaveFileName", return_value=(str(destination), "")), patch.object(ProjectContractDialog, "exec", accept_contract), patch.object(preview, "close", wraps=preview.close) as closed:
             dialog.confirm_button.click()
             self.assertFalse(dialog.isVisible())
             wait_for(lambda: not self.window._busy and (self.window.project is not None or self.errors), 120)

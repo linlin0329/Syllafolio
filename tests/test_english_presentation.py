@@ -4,8 +4,8 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from thesis_analysis.annotation_english import system_error, system_fields, system_text
-from thesis_analysis.annotation_material_origin import classify_material
+from syllafolio.annotation_english import system_error, system_fields, system_text
+from syllafolio.annotation_material_origin import classify_material
 
 
 class EnglishPresentation(unittest.TestCase):

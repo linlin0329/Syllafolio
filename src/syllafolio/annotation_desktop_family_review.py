@@ -202,7 +202,7 @@ def _reference_ids(project):
     try:
         from .annotation_desktop_review_media import ReferenceStore
     except ModuleNotFoundError as exc:
-        if exc.name != "thesis_analysis.annotation_desktop_review_media":
+        if exc.name != f"{__package__}.annotation_desktop_review_media":
             raise
         return []
     return ReferenceStore(project).ids()
