@@ -18,7 +18,7 @@ from .annotation_desktop_review_media import _checked_path
 FILENAME = "desktop_source_draft.json"
 SCHEMA = "syllafolio-desktop-source-draft-v1"
 LIMITATION = ("Original-recording groups are operator declarations. The application checks task scope and known same-source "
-    "or exact-PCM constraints; it does not verify recording identity or individual independence. A WAV or parent clip is not automatically a recording.")
+    "or exact-PCM constraints; it does not verify recording identity or individual independence. A syllable file or parent clip is not automatically a recording.")
 ERROR_TEXT = {
     "SOURCE_CONFLICT": "Known same-parent, identical-parent-PCM or exact-segment-PCM constraints conflict with the declared recording IDs.",
     "SOURCE_VERSION_CONFLICT": "The saved source version changed. Keep your input, refresh the current version and validate again.",

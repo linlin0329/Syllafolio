@@ -2,7 +2,7 @@
 
 Fully extract this package, then double-click **Start.cmd**. It opens an empty workspace. No audio samples, demonstration projects, user projects or application acceptance datasets are included. Python and the fixed dependencies are private to this package; no Python/Conda installation or network download is needed.
 
-Use **Project → New project from syllables…** to import your own segmented mono WAV files, or **Open project…** for an existing, normally closed project copy. `Start.cmd --project "FULL_PROJECT_PATH"` explicitly opens a project; `--blank` is the same as the default empty startup. Preserve older installations and original projects. Make an official offline project backup before migration.
+Use **Project → New project from syllables…** to import your own segmented mono audio in WAV, FLAC, MP3, Ogg Vorbis or AIFF (`.aif`/`.aiff`) format, or **Open project…** for an existing, normally closed project copy. All files in a batch must use the same sample rate of at least 32000 Hz; each segment must be no longer than 30 seconds. Channels are not mixed and audio is not resampled automatically. `Start.cmd --project "FULL_PROJECT_PATH"` explicitly opens a project; `--blank` is the same as the default empty startup. Preserve older installations and original projects. Make an official offline project backup before migration.
 
 The sidebar contains **Candidate Groups**, **Global pool** and **Family reviews**. Right-click Candidate Groups to open candidate organization. Workspace contains **Final checks**, **Type definitions and directed review**, **Internal assessment** and **Catalogue delivery**. Recording sources and checkpoints/history are in Project. **View → Tasks…** remains available with no active tasks.
 

@@ -14,7 +14,7 @@ Double-click the installer and choose **Install**. Open **Syllafolio** from the 
 
 ## Review a project
 
-1. Choose **Project → New project from syllables…** and select your segmented mono WAV input. To inspect existing work, choose **Open project…** and select a properly closed project copy.
+1. Choose **Project → New project from syllables…** and select your segmented mono audio input: WAV, FLAC, MP3, Ogg Vorbis or AIFF (`.aif`/`.aiff`). All files in a batch must use the same sample rate of at least 32000 Hz, and each segment must be no longer than 30 seconds. To inspect existing work, choose **Open project…** and select a properly closed project copy.
 2. Select a scope in **Candidate Groups**, **Global pool** or **Family reviews**, then click **Prepare group**.
 3. Use **Play** to hear the page once or **Loop** to repeat it. Click a syllable to listen to it alone, or Ctrl-click several syllables to compare them. **Fit** restores the full page and frequency range.
 4. Select a human family and edit any exceptions. **Save and next** saves the current item and advances. **Save page** submits all eligible pending items on that page.

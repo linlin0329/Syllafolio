@@ -61,7 +61,7 @@ def _summary_text(view):
         f"Parent context: {summary.get('context_available_count')} · Segment only: {summary.get('segment_only_count')} · "
         f"Original segments.json: {'present' if sidecar is True else 'absent' if sidecar is False else 'not recorded'}\n"
         f"Original-recording declarations: {counts.get('declared')} known / {counts.get('unknown')} unknown. "
-        "A parent clip or WAV is not automatically an independent recording.")
+        "A parent clip or syllable file is not automatically an independent recording.")
 
 
 class InputInspectionDialog(QDialog):
@@ -75,6 +75,11 @@ class InputInspectionDialog(QDialog):
         summary = QLabel(_summary_text(view))
         summary.setWordWrap(True)
         layout.addWidget(summary)
+        skipped = view.get("summary", {}).get("skipped_audio_files", [])
+        if skipped:
+            notice = QLabel(f"Skipped {len(skipped)} unsupported audio file(s). See the file list in the details below.")
+            notice.setWordWrap(True)
+            layout.addWidget(notice)
         self.items = _table(["Stable ID", "Input file", "Context", "Duration (s)"])
         _rows(self.items, [[row.get("item_id"), row.get("filename"), row.get("context_kind"), row.get("duration_s")]
                           for row in view.get("items", [])])
@@ -83,7 +88,9 @@ class InputInspectionDialog(QDialog):
         self.details.setPlainText(_json({key: view.get(key) for key in
             ("summary", "sources", "duplicate_pcm_groups", "input_requirements", "limits")}))
         layout.addWidget(self.details, 1)
-        note = QLabel("This inspection is read-only. Import freezes this reviewed input identity and runs the fixed recipe. "
+        note = QLabel("Supported input: WAV, FLAC, MP3, Ogg Vorbis or AIFF (.aif/.aiff). "
+                      "Files must be mono, share a sample rate of at least 32000 Hz, and contain segments no longer than 30 seconds. "
+                      "This inspection is read-only. Import freezes this reviewed input identity and runs the fixed recipe. "
                       "No human labels are loaded. The first invalid input stops inspection.")
         note.setWordWrap(True)
         layout.addWidget(note)

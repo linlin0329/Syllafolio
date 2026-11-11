@@ -4,7 +4,7 @@ Version **0.1.0-lite1** uses the supplied application source and hash-locked dep
 
 ## Start and use your own project
 
-Fully extract the package and run **Start.cmd**. In Project, create a new project or open an existing project copy. New input consists of your own segmented mono WAV files with the same sample rate, at least 32000 Hz. The application does not automatically mix channels or resample. Use segments.json to declare parent recordings and frame boundaries explicitly. Unknown origins remain unknown; separate WAV files are not automatically independent recordings.
+Fully extract the package and run **Start.cmd**. In Project, create a new project or open an existing project copy. New input consists of your own segmented mono audio in WAV, FLAC, MP3, Ogg Vorbis or AIFF (`.aif`/`.aiff`) format. All files in a batch must use the same sample rate of at least 32000 Hz, and each segment must be no longer than 30 seconds. The application does not automatically mix channels or resample, and it does not use external converters to accept other formats. Use segments.json to declare parent recordings and frame boundaries explicitly. Unknown origins remain unknown; separate audio files are not automatically independent recordings.
 
 Import freezes the input and computes the fixed features. It does not assign scientific human types. Use the actual operator for a daily project; retain the engineering designation for engineering work. Store projects separately from original audio. Close normally before backing up the complete project. Do not replace a project's database with another project's database or overwrite an older installation.
 

@@ -12,7 +12,7 @@ FIELDS = [
     ("loop_boundaries", "Current-syllable loop, stop and switching targets behave correctly"),
     ("five_outcomes", "Five outcomes and other-family target selection are usable"),
     ("save_reopen", "My saved decision is retained after closing and reopening the project"),
-    ("real_import", "I imported my own segmented WAV folder and it completed"),
+    ("real_import", "I imported my own supported segmented audio folder and it completed"),
 ]
 
 
@@ -39,7 +39,7 @@ def create_dialog(parent=None):
     layout.addLayout(form)
     notes = QPlainTextEdit()
     notes.setObjectName("feedback_notes")
-    notes.setPlaceholderText("Describe any problem and the steps that reproduce it. Include Windows scaling if relevant.")
+    notes.setPlaceholderText("Describe any problem and the steps that reproduce it. Include the input format and Windows scaling if relevant.")
     layout.addWidget(notes)
     buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
     buttons.accepted.connect(dialog.accept)

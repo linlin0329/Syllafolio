@@ -46,6 +46,8 @@ def inspect_input(input_dir):
         "audio_bytes", "source_fingerprint")}
     summary.update(has_sidecar=inspection["has_sidecar"],
                    segment_only_count=sum(row.get("context_kind") == "segment_only" for row in plan["items"]))
+    if plan.get("skipped_audio_files"):
+        summary["skipped_audio_files"] = plan["skipped_audio_files"]
     return {"schema_version": SCHEMA, "status": "validated_input", "summary": summary,
             "items": copy.deepcopy(plan["items"]),
             "sources": {"counts": {"declared": declared.get("declared_items"),
