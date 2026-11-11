@@ -1,0 +1,274 @@
+{
+  "schema_version": "0.1.0",
+  "status": "P0_CONTRACT_ONLY",
+  "execution_enabled": false,
+  "description": "Application tool catalogue, not an already running service. Session roles come from trusted call context, not arguments. The two evaluation designs remain separate under task_contract.evaluation_design.",
+  "tool_count": 15,
+  "tools": {
+    "get_task_state": {
+      "allowed_roles": [
+        "assistant",
+        "operator"
+      ],
+      "argument_schema": "schemas/tool_request.schema.json#/$defs/get_task_state",
+      "mutates_state": false,
+      "requires_idempotency_key": false,
+      "requires_expected_revision": false,
+      "required_capability": null,
+      "effect": "read_state",
+      "assistant_exposed": true,
+      "additional_guards": [
+        "role_scoped_records",
+        "matching_task_contract"
+      ]
+    },
+    "record_human_observation": {
+      "allowed_roles": [
+        "operator"
+      ],
+      "argument_schema": "schemas/tool_request.schema.json#/$defs/record_human_observation",
+      "mutates_state": true,
+      "requires_idempotency_key": true,
+      "requires_expected_revision": true,
+      "required_capability": "manual_curation",
+      "effect": "record_human_observation",
+      "assistant_exposed": false,
+      "additional_guards": [
+        "role_scoped_records",
+        "matching_task_contract"
+      ]
+    },
+    "get_protocol_guidance": {
+      "allowed_roles": [
+        "assistant",
+        "operator"
+      ],
+      "argument_schema": "schemas/tool_request.schema.json#/$defs/get_protocol_guidance",
+      "mutates_state": false,
+      "requires_idempotency_key": false,
+      "requires_expected_revision": false,
+      "required_capability": "protocol_guidance",
+      "effect": "read_protocol",
+      "assistant_exposed": true,
+      "additional_guards": [
+        "role_scoped_records",
+        "matching_task_contract"
+      ]
+    },
+    "query_neighbors": {
+      "allowed_roles": [
+        "assistant",
+        "operator"
+      ],
+      "argument_schema": "schemas/tool_request.schema.json#/$defs/query_neighbors",
+      "mutates_state": false,
+      "requires_idempotency_key": false,
+      "requires_expected_revision": false,
+      "required_capability": "global_neighbors",
+      "effect": "read_global_neighbors",
+      "assistant_exposed": true,
+      "additional_guards": [
+        "role_scoped_records",
+        "matching_task_contract"
+      ]
+    },
+    "build_comparison_bundle": {
+      "allowed_roles": [
+        "assistant",
+        "operator"
+      ],
+      "argument_schema": "schemas/tool_request.schema.json#/$defs/build_comparison_bundle",
+      "mutates_state": true,
+      "requires_idempotency_key": true,
+      "requires_expected_revision": true,
+      "required_capability": "comparison_bundle",
+      "effect": "prepare_materials",
+      "assistant_exposed": true,
+      "additional_guards": [
+        "role_scoped_records",
+        "matching_task_contract"
+      ]
+    },
+    "open_review_issue": {
+      "allowed_roles": [
+        "assistant",
+        "operator"
+      ],
+      "argument_schema": "schemas/tool_request.schema.json#/$defs/open_review_issue",
+      "mutates_state": true,
+      "requires_idempotency_key": true,
+      "requires_expected_revision": true,
+      "required_capability": null,
+      "effect": "create_issue_revision",
+      "assistant_exposed": true,
+      "additional_guards": [
+        "allowed_member_ids",
+        "immutable_issue_revision",
+        "observation_provenance"
+      ]
+    },
+    "start_local_job": {
+      "allowed_roles": [
+        "assistant",
+        "operator"
+      ],
+      "argument_schema": "schemas/tool_request.schema.json#/$defs/start_local_job",
+      "mutates_state": true,
+      "requires_idempotency_key": true,
+      "requires_expected_revision": true,
+      "required_capability": null,
+      "effect": "queue_local_computation",
+      "assistant_exposed": true,
+      "additional_guards": [
+        "execution_gate_separate_from_offline_validation",
+        "issue_action_capability",
+        "human_observation_before_acoustic_fit",
+        "fit_comparison_change_scope",
+        "matching_input_versions",
+        "bounded_preset",
+        "budget_and_deadline"
+      ]
+    },
+    "get_job": {
+      "allowed_roles": [
+        "assistant",
+        "operator"
+      ],
+      "argument_schema": "schemas/tool_request.schema.json#/$defs/get_job",
+      "mutates_state": false,
+      "requires_idempotency_key": false,
+      "requires_expected_revision": false,
+      "required_capability": null,
+      "effect": "read_job",
+      "assistant_exposed": true,
+      "additional_guards": [
+        "role_scoped_records",
+        "matching_task_contract"
+      ]
+    },
+    "cancel_job": {
+      "allowed_roles": [
+        "assistant",
+        "operator"
+      ],
+      "argument_schema": "schemas/tool_request.schema.json#/$defs/cancel_job",
+      "mutates_state": true,
+      "requires_idempotency_key": true,
+      "requires_expected_revision": true,
+      "required_capability": null,
+      "effect": "request_cancellation",
+      "assistant_exposed": true,
+      "additional_guards": [
+        "role_scoped_records",
+        "matching_task_contract"
+      ]
+    },
+    "prepare_review_proposal": {
+      "allowed_roles": [
+        "assistant",
+        "operator"
+      ],
+      "argument_schema": "schemas/tool_request.schema.json#/$defs/prepare_review_proposal",
+      "mutates_state": true,
+      "requires_idempotency_key": true,
+      "requires_expected_revision": true,
+      "required_capability": null,
+      "effect": "prepare_review_package",
+      "assistant_exposed": true,
+      "additional_guards": [
+        "role_scoped_records",
+        "matching_task_contract"
+      ]
+    },
+    "save_checkpoint": {
+      "allowed_roles": [
+        "assistant",
+        "operator"
+      ],
+      "argument_schema": "schemas/tool_request.schema.json#/$defs/save_checkpoint",
+      "mutates_state": true,
+      "requires_idempotency_key": true,
+      "requires_expected_revision": true,
+      "required_capability": null,
+      "effect": "save_checkpoint",
+      "assistant_exposed": true,
+      "additional_guards": [
+        "role_scoped_records",
+        "matching_task_contract"
+      ]
+    },
+    "inspect_completion": {
+      "allowed_roles": [
+        "assistant",
+        "operator"
+      ],
+      "argument_schema": "schemas/tool_request.schema.json#/$defs/inspect_completion",
+      "mutates_state": false,
+      "requires_idempotency_key": false,
+      "requires_expected_revision": false,
+      "required_capability": null,
+      "effect": "read_missing_requirements",
+      "assistant_exposed": true,
+      "additional_guards": [
+        "role_scoped_records",
+        "matching_task_contract"
+      ]
+    },
+    "commit_human_decision": {
+      "allowed_roles": [
+        "operator"
+      ],
+      "argument_schema": "schemas/tool_request.schema.json#/$defs/commit_human_decision",
+      "mutates_state": true,
+      "requires_idempotency_key": true,
+      "requires_expected_revision": true,
+      "required_capability": "manual_curation",
+      "effect": "commit_human_decision",
+      "assistant_exposed": false,
+      "additional_guards": [
+        "authenticated_human_only",
+        "expected_catalogue_revision",
+        "eligible_change_ids_all_paths",
+        "human_axes_consistency",
+        "deadline_locked_no_backfill"
+      ]
+    },
+    "set_review_status": {
+      "allowed_roles": [
+        "operator"
+      ],
+      "argument_schema": "schemas/tool_request.schema.json#/$defs/set_review_status",
+      "mutates_state": true,
+      "requires_idempotency_key": true,
+      "requires_expected_revision": true,
+      "required_capability": "manual_curation",
+      "effect": "human_state_transition",
+      "assistant_exposed": false,
+      "additional_guards": [
+        "authenticated_human_only",
+        "legal_transition",
+        "completion_or_reopen_guards"
+      ]
+    },
+    "export_task_record": {
+      "allowed_roles": [
+        "operator",
+        "coordinator",
+        "reference",
+        "scoring_service"
+      ],
+      "argument_schema": "schemas/tool_request.schema.json#/$defs/export_task_record",
+      "mutates_state": true,
+      "requires_idempotency_key": true,
+      "requires_expected_revision": true,
+      "required_capability": null,
+      "effect": "export_role_scoped_records",
+      "assistant_exposed": false,
+      "additional_guards": [
+        "role_specific_export_scope",
+        "locked_revision",
+        "new_destination_slot"
+      ]
+    }
+  }
+}

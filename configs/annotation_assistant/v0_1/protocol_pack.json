@@ -1,0 +1,301 @@
+{
+  "schema_version": "annotation-assistant-protocol-pack-v1",
+  "pack_id": "syllafolio-desktop-reference",
+  "version": "0.1.0-lite1",
+  "language": "en",
+  "status": "desktop_reference",
+  "clauses": [
+    {
+      "id": "AAP-001",
+      "title": "Input syllables",
+      "text": "Import already segmented mono syllable files.",
+      "keywords": [
+        "import",
+        "WAV",
+        "syllables"
+      ]
+    },
+    {
+      "id": "AAP-002",
+      "title": "Human types",
+      "text": "Listen and select an existing human type, or create a new type.",
+      "keywords": [
+        "human types",
+        "membership"
+      ]
+    },
+    {
+      "id": "AAP-003",
+      "title": "Status and records",
+      "text": "Drafts, submitted records and completion states are displayed separately.",
+      "keywords": [
+        "draft",
+        "status",
+        "save"
+      ]
+    },
+    {
+      "id": "AAP-004",
+      "title": "Item identity",
+      "text": "Use stable syllable IDs, pages and review rounds to locate existing records.",
+      "keywords": [
+        "ID",
+        "version"
+      ]
+    },
+    {
+      "id": "AAP-005",
+      "title": "Syllable boundaries",
+      "text": "Open original-audio context when a boundary needs investigation.",
+      "keywords": [
+        "boundary",
+        "context"
+      ]
+    },
+    {
+      "id": "AAP-006",
+      "title": "Display range",
+      "text": "Display settings controls waveform and spectrogram parameters.",
+      "keywords": [
+        "waveform",
+        "spectrogram",
+        "display"
+      ]
+    },
+    {
+      "id": "AAP-007",
+      "title": "Candidate groups",
+      "text": "Expand Candidate Groups and prepare audition pages for the selected group.",
+      "keywords": [
+        "clustering",
+        "candidate groups"
+      ]
+    },
+    {
+      "id": "AAP-008",
+      "title": "Global pool",
+      "text": "Find syllables awaiting disposition in Global pool.",
+      "keywords": [
+        "unclustered",
+        "global pool"
+      ]
+    },
+    {
+      "id": "AAP-009",
+      "title": "Acoustic representation",
+      "text": "Inspect the acoustic settings for this run in the candidate workspace.",
+      "keywords": [
+        "acoustics",
+        "features"
+      ]
+    },
+    {
+      "id": "AAP-010",
+      "title": "Review entry",
+      "text": "Open an existing round to continue auditioning its original pages.",
+      "keywords": [
+        "review",
+        "round"
+      ]
+    },
+    {
+      "id": "AAP-011",
+      "title": "Syllable comparison",
+      "text": "Use Ctrl to select several syllables, then Play or Loop to compare them.",
+      "keywords": [
+        "comparison",
+        "multiple selection"
+      ]
+    },
+    {
+      "id": "AAP-012",
+      "title": "Prepare group",
+      "text": "Prepare group creates audition pages for the selected scope.",
+      "keywords": [
+        "grouping",
+        "prepare"
+      ]
+    },
+    {
+      "id": "AAP-013",
+      "title": "Sources and references",
+      "text": "Use Item tools to inspect sources and references for the current syllable.",
+      "keywords": [
+        "reference",
+        "source"
+      ]
+    },
+    {
+      "id": "AAP-014",
+      "title": "Review members",
+      "text": "Pages show the members frozen when this round was prepared.",
+      "keywords": [
+        "scope",
+        "members"
+      ]
+    },
+    {
+      "id": "AAP-015",
+      "title": "Scope changes",
+      "text": "Follow the page prompts to prepare a new round when membership changes.",
+      "keywords": [
+        "scope",
+        "update"
+      ]
+    },
+    {
+      "id": "AAP-016",
+      "title": "Fine review",
+      "text": "Fine review records detailed judgments for an individual syllable.",
+      "keywords": [
+        "fine review",
+        "judgment"
+      ]
+    },
+    {
+      "id": "AAP-017",
+      "title": "Type definitions",
+      "text": "Maintain type cards and diagnostic descriptions in the type-definition workspace.",
+      "keywords": [
+        "type",
+        "criteria"
+      ]
+    },
+    {
+      "id": "AAP-018",
+      "title": "Unresolved membership",
+      "text": "Choose Family unresolved when membership cannot yet be determined.",
+      "keywords": [
+        "unresolved",
+        "human family"
+      ]
+    },
+    {
+      "id": "AAP-019",
+      "title": "Additional observations",
+      "text": "Select one syllable to add observations in Notes.",
+      "keywords": [
+        "notes",
+        "component"
+      ]
+    },
+    {
+      "id": "AAP-020",
+      "title": "Examples",
+      "text": "Catalogue examples link to the corresponding syllable images and audio.",
+      "keywords": [
+        "examples",
+        "audio"
+      ]
+    },
+    {
+      "id": "AAP-021",
+      "title": "Dispositions",
+      "text": "Use the available dispositions for current family, other family, new family, unresolved and excluded.",
+      "keywords": [
+        "disposition",
+        "excluded"
+      ]
+    },
+    {
+      "id": "AAP-022",
+      "title": "Save an item or page",
+      "text": "Save and next submits the current item; Save page submits eligible items on this page.",
+      "keywords": [
+        "current item",
+        "whole page",
+        "save"
+      ]
+    },
+    {
+      "id": "AAP-023",
+      "title": "Drafts and history",
+      "text": "The project stores submitted records and restores matching unsubmitted page drafts.",
+      "keywords": [
+        "draft",
+        "history"
+      ]
+    },
+    {
+      "id": "AAP-024",
+      "title": "Finish a review",
+      "text": "Record closing notes after completing the required checks for the round.",
+      "keywords": [
+        "finish",
+        "review"
+      ]
+    },
+    {
+      "id": "AAP-025",
+      "title": "Delivery scope",
+      "text": "Select the scope for this confirmation in Final checks.",
+      "keywords": [
+        "scope",
+        "completion"
+      ]
+    },
+    {
+      "id": "AAP-026",
+      "title": "Task status",
+      "text": "View background tasks and results in View → Tasks.",
+      "keywords": [
+        "tasks",
+        "progress"
+      ]
+    },
+    {
+      "id": "AAP-027",
+      "title": "Prepare again",
+      "text": "Enter the requested reason when preparing a new audition round.",
+      "keywords": [
+        "reopen",
+        "prepare"
+      ]
+    },
+    {
+      "id": "AAP-028",
+      "title": "Directed review",
+      "text": "Locate items needing further audition from the type-definition workspace.",
+      "keywords": [
+        "directed review",
+        "type"
+      ]
+    },
+    {
+      "id": "AAP-029",
+      "title": "Historical checkpoints",
+      "text": "Open Checkpoints and history from Project.",
+      "keywords": [
+        "checkpoint",
+        "version"
+      ]
+    },
+    {
+      "id": "AAP-030",
+      "title": "Catalogue export",
+      "text": "Select draft or complete mode in Catalogue delivery to export the catalogue.",
+      "keywords": [
+        "catalogue",
+        "delivery"
+      ]
+    },
+    {
+      "id": "AAP-031",
+      "title": "Internal assessment",
+      "text": "Inspect results supported by saved records in Internal assessment.",
+      "keywords": [
+        "assessment",
+        "coverage"
+      ]
+    },
+    {
+      "id": "AAP-032",
+      "title": "Recording sources",
+      "text": "Register original-recording identifiers in Project → Recording sources.",
+      "keywords": [
+        "recording",
+        "source"
+      ]
+    }
+  ]
+}

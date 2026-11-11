@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/annotation-assistant/v0.1/schemas/state_transition.schema.json",
+  "title": "state_transition",
+  "description": "Offline structural contract. Schema validity does not establish authorization, execution, completed human judgment or scientific quality. Cross-object references, identity permissions, versions and state guards are checked separately by the offline semantic validator and runtime.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "0.1.0"
+    },
+    "record_kind": {
+      "$ref": "common.schema.json#/$defs/record_kind"
+    },
+    "execution_enabled": {
+      "type": "boolean"
+    },
+    "transition_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    },
+    "task_contract_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    },
+    "object_kind": {
+      "enum": [
+        "job",
+        "issue",
+        "catalogue"
+      ]
+    },
+    "object_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    },
+    "from_state": {
+      "enum": [
+        "queued",
+        "running",
+        "succeeded",
+        "failed",
+        "cancel_requested",
+        "cancelled",
+        "open",
+        "comparison_ready",
+        "under_human_review",
+        "decided",
+        "reviewed_unresolved",
+        "unfinished",
+        "working",
+        "checkpoint",
+        "scoped_complete"
+      ]
+    },
+    "to_state": {
+      "enum": [
+        "queued",
+        "running",
+        "succeeded",
+        "failed",
+        "cancel_requested",
+        "cancelled",
+        "open",
+        "comparison_ready",
+        "under_human_review",
+        "decided",
+        "reviewed_unresolved",
+        "unfinished",
+        "working",
+        "checkpoint",
+        "scoped_complete"
+      ]
+    },
+    "event": {
+      "enum": [
+        "advance",
+        "pause_unfinished",
+        "resume",
+        "close_decided",
+        "close_unresolved",
+        "save_checkpoint",
+        "complete_scope",
+        "reopen",
+        "request_cancel",
+        "acknowledge_cancel",
+        "fail",
+        "succeed"
+      ]
+    },
+    "actor": {
+      "$ref": "common.schema.json#/$defs/trusted_actor"
+    },
+    "expected_revision": {
+      "$ref": "common.schema.json#/$defs/revision"
+    },
+    "revision_after": {
+      "$ref": "common.schema.json#/$defs/revision"
+    },
+    "parent_object_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "affected_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 160,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+      },
+      "uniqueItems": true
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "checks": {
+      "type": "object",
+      "properties": {
+        "required_comparisons_complete": {
+          "type": "boolean"
+        },
+        "member_accounting_complete": {
+          "type": "boolean"
+        },
+        "affected_relations_checked": {
+          "type": "boolean"
+        },
+        "quality_requirements_met": {
+          "type": "boolean"
+        },
+        "human_scope_acceptance": {
+          "type": "boolean"
+        },
+        "new_evidence_recorded": {
+          "type": "boolean"
+        },
+        "deadline_locked": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "required_comparisons_complete",
+        "member_accounting_complete",
+        "affected_relations_checked",
+        "quality_requirements_met",
+        "human_scope_acceptance",
+        "new_evidence_recorded",
+        "deadline_locked"
+      ],
+      "additionalProperties": false
+    },
+    "recorded_at": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    }
+  },
+  "required": [
+    "schema_version",
+    "record_kind",
+    "execution_enabled",
+    "transition_id",
+    "task_contract_id",
+    "object_kind",
+    "object_id",
+    "from_state",
+    "to_state",
+    "event",
+    "actor",
+    "expected_revision",
+    "revision_after",
+    "parent_object_id",
+    "affected_ids",
+    "reason",
+    "checks",
+    "recorded_at",
+    "idempotency_key"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "record_kind": {
+            "const": "engineering_simulation"
+          }
+        },
+        "required": [
+          "record_kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "execution_enabled": {
+            "const": false
+          }
+        }
+      }
+    }
+  ]
+}

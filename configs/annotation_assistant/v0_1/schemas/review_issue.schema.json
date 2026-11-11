@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/annotation-assistant/v0.1/schemas/review_issue.schema.json",
+  "title": "review_issue",
+  "description": "Offline structural contract. Schema validity does not establish authorization, execution, completed human judgment or scientific quality. Cross-object references, identity permissions, versions and state guards are checked separately by the offline semantic validator and runtime.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "0.1.0"
+    },
+    "record_kind": {
+      "$ref": "common.schema.json#/$defs/record_kind"
+    },
+    "execution_enabled": {
+      "type": "boolean"
+    },
+    "issue_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    },
+    "task_contract_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    },
+    "revision": {
+      "$ref": "common.schema.json#/$defs/revision"
+    },
+    "parent_issue_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "question": {
+      "type": "string",
+      "minLength": 1
+    },
+    "origin_observation_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 160,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+      },
+      "uniqueItems": true
+    },
+    "target_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 160,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+      },
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "fit_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 160,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+      },
+      "uniqueItems": true
+    },
+    "comparison_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 160,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+      },
+      "uniqueItems": true
+    },
+    "eligible_change_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 160,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+      },
+      "uniqueItems": true
+    },
+    "action": {
+      "enum": [
+        "direct_compare",
+        "fixed_global_reorder",
+        "local_reorder",
+        "local_recluster"
+      ]
+    },
+    "scope_reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "open",
+        "comparison_ready",
+        "under_human_review",
+        "decided",
+        "reviewed_unresolved",
+        "unfinished"
+      ]
+    },
+    "input_versions": {
+      "type": "object",
+      "properties": {
+        "material_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "boundary_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "feature_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "global_representation_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        }
+      },
+      "required": [
+        "material_version",
+        "boundary_version",
+        "feature_version",
+        "global_representation_version"
+      ],
+      "additionalProperties": false
+    },
+    "catalogue_revision_at_request": {
+      "$ref": "common.schema.json#/$defs/revision"
+    }
+  },
+  "required": [
+    "schema_version",
+    "record_kind",
+    "execution_enabled",
+    "issue_id",
+    "task_contract_id",
+    "revision",
+    "parent_issue_id",
+    "question",
+    "origin_observation_ids",
+    "target_ids",
+    "fit_ids",
+    "comparison_ids",
+    "eligible_change_ids",
+    "action",
+    "scope_reason",
+    "status",
+    "input_versions",
+    "catalogue_revision_at_request"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "record_kind": {
+            "const": "engineering_simulation"
+          }
+        },
+        "required": [
+          "record_kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "execution_enabled": {
+            "const": false
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,248 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/annotation-assistant/v0.1/schemas/job_receipt.schema.json",
+  "title": "job_receipt",
+  "description": "Offline structural contract; it does not run computation, authenticate a session or produce human judgments. Cross-object and permission guards require separate validation.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "0.1.0"
+    },
+    "record_kind": {
+      "$ref": "common.schema.json#/$defs/record_kind"
+    },
+    "execution_enabled": {
+      "type": "boolean"
+    },
+    "job_id": {
+      "$ref": "common.schema.json#/$defs/id"
+    },
+    "request_id": {
+      "$ref": "common.schema.json#/$defs/id"
+    },
+    "task_contract_id": {
+      "$ref": "common.schema.json#/$defs/id"
+    },
+    "issue_id": {
+      "$ref": "common.schema.json#/$defs/id"
+    },
+    "action": {
+      "enum": [
+        "local_reorder",
+        "local_recluster"
+      ]
+    },
+    "config_id": {
+      "$ref": "common.schema.json#/$defs/id"
+    },
+    "status": {
+      "$ref": "common.schema.json#/$defs/job_status"
+    },
+    "input_versions": {
+      "$ref": "common.schema.json#/$defs/input_versions"
+    },
+    "issue_revision": {
+      "$ref": "common.schema.json#/$defs/revision"
+    },
+    "catalogue_revision_at_request": {
+      "$ref": "common.schema.json#/$defs/revision"
+    },
+    "fit_ids": {
+      "$ref": "common.schema.json#/$defs/nonempty_ids"
+    },
+    "comparison_ids": {
+      "$ref": "common.schema.json#/$defs/ids"
+    },
+    "eligible_change_ids": {
+      "$ref": "common.schema.json#/$defs/ids"
+    },
+    "fit_manifest_sha256": {
+      "$ref": "common.schema.json#/$defs/sha256"
+    },
+    "comparison_manifest_sha256": {
+      "$ref": "common.schema.json#/$defs/sha256"
+    },
+    "input_fingerprint": {
+      "$ref": "common.schema.json#/$defs/sha256"
+    },
+    "code_version": {
+      "$ref": "common.schema.json#/$defs/id"
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "transform_steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "enum": [
+              "feature_selection",
+              "scaling",
+              "pca",
+              "umap",
+              "distance",
+              "ordering",
+              "clustering"
+            ]
+          },
+          "mode": {
+            "enum": [
+              "reused",
+              "refitted",
+              "computed"
+            ]
+          },
+          "fit_ids": {
+            "$ref": "common.schema.json#/$defs/ids"
+          }
+        },
+        "required": [
+          "name",
+          "mode",
+          "fit_ids"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "result_ids": {
+      "$ref": "common.schema.json#/$defs/ids"
+    },
+    "output_validation": {
+      "enum": [
+        "not_available",
+        "pending",
+        "passed",
+        "failed"
+      ]
+    },
+    "cache_hit": {
+      "type": "boolean"
+    },
+    "stale_for_current_revision": {
+      "type": "boolean"
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "idempotency_key": {
+      "$ref": "common.schema.json#/$defs/id"
+    },
+    "queued_at": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+    "started_at": {
+      "anyOf": [
+        {
+          "$ref": "common.schema.json#/$defs/timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "finished_at": {
+      "anyOf": [
+        {
+          "$ref": "common.schema.json#/$defs/timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "compute_wall_seconds": {
+      "anyOf": [
+        {
+          "type": "number",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cancel_requested_at": {
+      "anyOf": [
+        {
+          "$ref": "common.schema.json#/$defs/timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "failure_code": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "record_kind",
+    "execution_enabled",
+    "job_id",
+    "request_id",
+    "task_contract_id",
+    "issue_id",
+    "action",
+    "config_id",
+    "status",
+    "input_versions",
+    "issue_revision",
+    "catalogue_revision_at_request",
+    "fit_ids",
+    "comparison_ids",
+    "eligible_change_ids",
+    "fit_manifest_sha256",
+    "comparison_manifest_sha256",
+    "input_fingerprint",
+    "code_version",
+    "seed",
+    "transform_steps",
+    "result_ids",
+    "output_validation",
+    "cache_hit",
+    "stale_for_current_revision",
+    "attempt",
+    "idempotency_key",
+    "queued_at",
+    "started_at",
+    "finished_at",
+    "compute_wall_seconds",
+    "cancel_requested_at",
+    "failure_code"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "record_kind": {
+            "const": "engineering_simulation"
+          }
+        },
+        "required": [
+          "record_kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "execution_enabled": {
+            "const": false
+          }
+        }
+      }
+    }
+  ]
+}

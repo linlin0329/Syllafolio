@@ -1,0 +1,286 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/annotation-assistant/v0.1/schemas/operator_view.schema.json",
+  "title": "operator_view",
+  "description": "Offline structural contract. Schema validity does not establish authorization, execution, completed human judgment or scientific quality. Cross-object references, identity permissions, versions and state guards are checked separately by the offline semantic validator and runtime.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "0.1.0"
+    },
+    "record_kind": {
+      "$ref": "common.schema.json#/$defs/record_kind"
+    },
+    "execution_enabled": {
+      "type": "boolean"
+    },
+    "view_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    },
+    "task_contract_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    },
+    "input_versions": {
+      "type": "object",
+      "properties": {
+        "material_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "boundary_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "feature_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "global_representation_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        }
+      },
+      "required": [
+        "material_version",
+        "boundary_version",
+        "feature_version",
+        "global_representation_version"
+      ],
+      "additionalProperties": false
+    },
+    "allowed_item_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 160,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+      },
+      "uniqueItems": true
+    },
+    "protocol_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    },
+    "preset_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 160,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+      },
+      "uniqueItems": true
+    },
+    "condition": {
+      "type": "object",
+      "properties": {
+        "condition_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "assistant_enabled": {
+          "type": "boolean"
+        },
+        "capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "global_neighbors",
+              "comparison_bundle",
+              "local_reorder",
+              "local_recluster",
+              "manual_curation",
+              "protocol_guidance",
+              "assistant_orchestration"
+            ]
+          }
+        }
+      },
+      "required": [
+        "condition_id",
+        "assistant_enabled",
+        "capabilities"
+      ],
+      "additionalProperties": false
+    },
+    "catalogue_revision": {
+      "$ref": "common.schema.json#/$defs/revision"
+    },
+    "catalogue_memberships": {
+      "type": "array",
+      "items": {
+        "$ref": "common.schema.json#/$defs/type_membership"
+      },
+      "minItems": 0
+    },
+    "candidate_assignments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+          },
+          "candidate_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "result_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+          }
+        },
+        "required": [
+          "item_id",
+          "candidate_id",
+          "result_id"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0
+    },
+    "observations": {
+      "type": "array",
+      "items": {
+        "$ref": "human_observation.schema.json"
+      },
+      "minItems": 0
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "$ref": "review_issue.schema.json"
+      },
+      "minItems": 0
+    },
+    "remaining_budget": {
+      "type": "object",
+      "properties": {
+        "human_seconds": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "compute_seconds": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model_calls": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "human_seconds",
+        "compute_seconds",
+        "model_calls"
+      ],
+      "additionalProperties": false
+    },
+    "unfinished_issue_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 160,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+      },
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "schema_version",
+    "record_kind",
+    "execution_enabled",
+    "view_id",
+    "task_contract_id",
+    "input_versions",
+    "allowed_item_ids",
+    "protocol_version",
+    "preset_ids",
+    "condition",
+    "catalogue_revision",
+    "catalogue_memberships",
+    "candidate_assignments",
+    "observations",
+    "issues",
+    "remaining_budget",
+    "unfinished_issue_ids"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "record_kind": {
+            "const": "engineering_simulation"
+          }
+        },
+        "required": [
+          "record_kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "execution_enabled": {
+            "const": false
+          }
+        }
+      }
+    }
+  ]
+}

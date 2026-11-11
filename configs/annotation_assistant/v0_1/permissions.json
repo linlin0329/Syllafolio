@@ -1,0 +1,153 @@
+{
+  "schema_version": "0.1.0",
+  "status": "P0_CONTRACT_ONLY",
+  "execution_enabled": false,
+  "identity_source": "trusted_context_not_model_arguments",
+  "roles": {
+    "assistant": {
+      "allowed_tools": [
+        "get_task_state",
+        "get_protocol_guidance",
+        "query_neighbors",
+        "build_comparison_bundle",
+        "open_review_issue",
+        "start_local_job",
+        "get_job",
+        "cancel_job",
+        "prepare_review_proposal",
+        "save_checkpoint",
+        "inspect_completion"
+      ],
+      "export_scopes": [],
+      "can_receive_media": false,
+      "can_write_human_judgment": false,
+      "can_read_historical_answers": false,
+      "can_read_quality_reference": false
+    },
+    "operator": {
+      "allowed_tools": [
+        "get_task_state",
+        "record_human_observation",
+        "get_protocol_guidance",
+        "query_neighbors",
+        "build_comparison_bundle",
+        "open_review_issue",
+        "start_local_job",
+        "get_job",
+        "cancel_job",
+        "prepare_review_proposal",
+        "save_checkpoint",
+        "inspect_completion",
+        "commit_human_decision",
+        "set_review_status",
+        "export_task_record"
+      ],
+      "export_scopes": [
+        "operator_records"
+      ],
+      "can_receive_media": true,
+      "can_write_human_judgment": true,
+      "can_read_historical_answers": false,
+      "can_read_quality_reference": false
+    },
+    "coordinator": {
+      "allowed_tools": [
+        "export_task_record"
+      ],
+      "export_scopes": [
+        "coordinator_records"
+      ],
+      "can_receive_media": true,
+      "can_write_human_judgment": false,
+      "can_read_historical_answers": true,
+      "can_read_quality_reference": true
+    },
+    "reference": {
+      "allowed_tools": [
+        "export_task_record"
+      ],
+      "export_scopes": [
+        "reference_records"
+      ],
+      "can_receive_media": true,
+      "can_write_human_judgment": true,
+      "can_read_historical_answers": false,
+      "can_read_quality_reference": true
+    },
+    "scoring_service": {
+      "allowed_tools": [
+        "export_task_record"
+      ],
+      "export_scopes": [
+        "scoring_records"
+      ],
+      "can_receive_media": false,
+      "can_write_human_judgment": false,
+      "can_read_historical_answers": false,
+      "can_read_quality_reference": true
+    },
+    "system": {
+      "allowed_tools": [],
+      "export_scopes": [],
+      "can_receive_media": false,
+      "can_write_human_judgment": false,
+      "can_read_historical_answers": false,
+      "can_read_quality_reference": false
+    }
+  },
+  "assistant_context_allowlist": [
+    "role_scoped_task_state",
+    "versioned_protocol_text",
+    "approved_teaching_metadata",
+    "authenticated_human_observations",
+    "numeric_results",
+    "opaque_material_handles",
+    "assistant_proposals"
+  ],
+  "assistant_context_denials": [
+    "audio_bytes",
+    "spectrogram_pixels",
+    "screenshots",
+    "automatic_media_semantics",
+    "historical_final_labels",
+    "reference_answers",
+    "hidden_audit_pairs",
+    "other_operator_results",
+    "raw_filesystem",
+    "browser_capture",
+    "arbitrary_shell"
+  ],
+  "operator_view_excluded_keys": [
+    "historical_labels",
+    "historical_final_labels",
+    "reference_labels",
+    "reference_answers",
+    "hidden_audit_pairs",
+    "other_operator_records",
+    "source_stem",
+    "raw_recording_id",
+    "absolute_path",
+    "audio_bytes",
+    "image_pixels",
+    "media_base64",
+    "coordinator_notes"
+  ],
+  "request_forbidden_identity_fields": [
+    "role",
+    "actor_role",
+    "reviewer_id",
+    "actor_id",
+    "session_role",
+    "trusted_context"
+  ],
+  "actor_stamp_rule": "actor fields in stored observations/decisions/transitions are server provenance; matching trusted session must be checked separately",
+  "engineering_rule": "engineering_simulation always execution_enabled=false; shape validity never authorizes model calls, jobs, human judgments or publication",
+  "assistant_condition_rule": "assistant role requires condition.assistant_enabled=true and assistant_orchestration capability",
+  "comparison_design_rules": {
+    "assistant_increment": "paired conditions differ only in assistant_enabled and assistant_orchestration; acoustic capabilities, materials, presets and timing remain matched",
+    "local_module_increment": "local_reorder/local_recluster can differ as declared; never pool with assistant_increment",
+    "engineering_only": "synthetic dry examples; no human efficacy inference"
+  },
+  "scope_rule": "all visible/referenced members must resolve through the task allowlist; fit_ids and comparison_ids are independently versioned and comparison does not imply change permission",
+  "reference_rule": "reference input excludes condition, suggestions, operator decisions and historical labels; export and scoring occur in separate role-scoped processes"
+}

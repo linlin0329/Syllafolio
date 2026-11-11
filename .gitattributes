@@ -1,0 +1,3 @@
+# Frozen project fingerprints and build checksums are byte-sensitive.
+# Preserve the reviewed bytes, including existing source line endings.
+* -text

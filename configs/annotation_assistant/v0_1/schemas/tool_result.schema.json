@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/annotation-assistant/v0.1/schemas/tool_result.schema.json",
+  "title": "tool_result",
+  "description": "Offline structural contract; it does not run computation, authenticate a session or produce human judgments. Cross-object and permission guards require separate validation.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "0.1.0"
+    },
+    "record_kind": {
+      "$ref": "common.schema.json#/$defs/record_kind"
+    },
+    "execution_enabled": {
+      "type": "boolean"
+    },
+    "request_id": {
+      "$ref": "common.schema.json#/$defs/id"
+    },
+    "task_contract_id": {
+      "$ref": "common.schema.json#/$defs/id"
+    },
+    "tool_name": {
+      "enum": [
+        "get_task_state",
+        "record_human_observation",
+        "get_protocol_guidance",
+        "query_neighbors",
+        "build_comparison_bundle",
+        "open_review_issue",
+        "start_local_job",
+        "get_job",
+        "cancel_job",
+        "prepare_review_proposal",
+        "save_checkpoint",
+        "inspect_completion",
+        "commit_human_decision",
+        "set_review_status",
+        "export_task_record"
+      ]
+    },
+    "status": {
+      "enum": [
+        "ok",
+        "accepted",
+        "failed",
+        "rejected"
+      ]
+    },
+    "input_versions": {
+      "$ref": "common.schema.json#/$defs/input_versions"
+    },
+    "result_ids": {
+      "$ref": "common.schema.json#/$defs/ids"
+    },
+    "source_receipt": {
+      "$ref": "common.schema.json#/$defs/source_receipt"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "error_code": {
+              "enum": [
+                "INVALID_INPUT",
+                "UNAUTHORIZED",
+                "OUT_OF_SCOPE",
+                "VERSION_CONFLICT",
+                "STALE_REVISION",
+                "INSUFFICIENT_INPUT",
+                "BUDGET_UNCONFIGURED",
+                "BUDGET_EXHAUSTED",
+                "DEADLINE_LOCKED",
+                "CANCELLED",
+                "JOB_FAILED",
+                "RESULT_NOT_READY",
+                "MISSING_HUMAN_OBSERVATION",
+                "IDEMPOTENCY_CONFLICT",
+                "INVALID_TRANSITION"
+              ]
+            },
+            "message": {
+              "$ref": "common.schema.json#/$defs/text"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "error_code",
+            "message",
+            "retryable"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "numeric_summaries": {
+      "type": "array",
+      "items": {
+        "$ref": "common.schema.json#/$defs/numeric_result"
+      }
+    },
+    "recorded_at": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    }
+  },
+  "required": [
+    "schema_version",
+    "record_kind",
+    "execution_enabled",
+    "request_id",
+    "task_contract_id",
+    "tool_name",
+    "status",
+    "input_versions",
+    "result_ids",
+    "source_receipt",
+    "error",
+    "numeric_summaries",
+    "recorded_at"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "record_kind": {
+            "const": "engineering_simulation"
+          }
+        },
+        "required": [
+          "record_kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "execution_enabled": {
+            "const": false
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "schema_version": "annotation-acoustics-preset-v1",
+  "preset_id": "p1-fixed-multiview-v1",
+  "purpose": "engineering_prototype_not_validated_optimal_parameters",
+  "feature_layout": "ei_b_assistance.FEATURE_NAMES",
+  "global": {
+    "scaler": "RobustScaler",
+    "quantile_range": [25.0, 75.0],
+    "distance": "euclidean_scaled94",
+    "excluded_indices": [0, 1, 2, 3, 4, 5, 25, 45, 65, 103, 104],
+    "tie_break": "item_id"
+  },
+  "local": {
+    "minimum_reorder_rows": 3,
+    "minimum_recluster_rows": 20,
+    "acoustic_scaler": "RobustScaler",
+    "patch_scaler": "StandardScaler",
+    "pca_components_max": 30,
+    "pca_whiten": true,
+    "pca_svd_solver": "full",
+    "rank_rule": "cap_components_by_centered_numeric_rank",
+    "post_pca_scaler": "StandardScaler",
+    "view_weighting": "divide_each_view_by_sqrt_its_component_count",
+    "distance": "euclidean",
+    "ordering_linkage": "average",
+    "optimal_ordering": true,
+    "seed": 52
+  },
+  "umap": {
+    "n_components": 10,
+    "n_neighbors": 10,
+    "min_dist": 0.0,
+    "metric": "euclidean",
+    "random_state": 52,
+    "transform_seed": 52,
+    "init": "spectral",
+    "n_jobs": 1
+  },
+  "hdbscan": {
+    "min_cluster_size": 5,
+    "min_samples": 2,
+    "cluster_selection_method": "leaf",
+    "metric": "euclidean",
+    "gen_min_span_tree": true,
+    "prediction_data": true,
+    "core_dist_n_jobs": 1
+  },
+  "display": {
+    "n_fft": 1024,
+    "hop": 256,
+    "frequency_max_hz": 16000,
+    "db_min": -90,
+    "db_max": 0,
+    "image_width": 1000,
+    "image_height": 300,
+    "context_padding_s": 0.35,
+    "group_gap_s": 0.5,
+    "maximum_bundle_items": 100,
+    "gain_or_filter": "none",
+    "time_scale": "same_seconds_per_pixel_with_unobserved_area_marked"
+  },
+  "provenance": {
+    "global_reference": "ThesisAnalysis/src/thesis_analysis/ei_b_assistance.py",
+    "local_reference": "ThesisAnalysis/workflows/04_syllable_typing/code/recluster_merged_macro_08_10.py",
+    "note": "沿用既有94D与log-mel分视图缩放/PCA/等权融合配方，移除历史队列与参数搜索绑定；数值秩上限作为显式退化处理，不声称这些固定参数已验证最优。"
+  }
+}

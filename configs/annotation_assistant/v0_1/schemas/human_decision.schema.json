@@ -1,0 +1,272 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/annotation-assistant/v0.1/schemas/human_decision.schema.json",
+  "title": "human_decision",
+  "description": "Offline structural contract. Schema validity does not establish authorization, execution, completed human judgment or scientific quality. Cross-object references, identity permissions, versions and state guards are checked separately by the offline semantic validator and runtime.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "0.1.0"
+    },
+    "record_kind": {
+      "$ref": "common.schema.json#/$defs/record_kind"
+    },
+    "execution_enabled": {
+      "type": "boolean"
+    },
+    "decision_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    },
+    "task_contract_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    },
+    "issue_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    },
+    "proposal_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "actor": {
+      "$ref": "common.schema.json#/$defs/trusted_actor",
+      "properties": {
+        "role": {
+          "const": "operator"
+        }
+      }
+    },
+    "observation_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 160,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+      },
+      "uniqueItems": true
+    },
+    "affected_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 160,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+      },
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "operation": {
+      "enum": [
+        "retain",
+        "assign",
+        "merge",
+        "split",
+        "propose_type",
+        "propose_variant",
+        "defer_unknown",
+        "reject"
+      ]
+    },
+    "axes": {
+      "description": "One shared three-axis judgment applies to all affected_ids; this field must be null when item_axes is supplied.",
+      "anyOf": [
+        {
+          "$ref": "common.schema.json#/$defs/decision_axes"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "processing_state": {
+      "$ref": "common.schema.json#/$defs/processing_state"
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "expected_catalogue_revision": {
+      "$ref": "common.schema.json#/$defs/revision"
+    },
+    "catalogue_revision_after": {
+      "$ref": "common.schema.json#/$defs/revision"
+    },
+    "memberships_before": {
+      "type": "array",
+      "items": {
+        "$ref": "common.schema.json#/$defs/type_membership"
+      },
+      "minItems": 0
+    },
+    "memberships_after": {
+      "type": "array",
+      "items": {
+        "$ref": "common.schema.json#/$defs/type_membership"
+      },
+      "minItems": 0
+    },
+    "input_versions": {
+      "type": "object",
+      "properties": {
+        "material_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "boundary_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "feature_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "global_representation_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        }
+      },
+      "required": [
+        "material_version",
+        "boundary_version",
+        "feature_version",
+        "global_representation_version"
+      ],
+      "additionalProperties": false
+    },
+    "recorded_at": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    },
+    "elapsed_person_seconds": {
+      "anyOf": [
+        {
+          "type": "number",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "item_axes": {
+      "description": "Per-syllable judgments for heterogeneous batches such as type splitting; the semantic validator requires each affected_id exactly once and rejects extra items.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "item_id": {
+            "$ref": "common.schema.json#/$defs/id"
+          },
+          "axes": {
+            "$ref": "common.schema.json#/$defs/decision_axes"
+          }
+        },
+        "required": [
+          "item_id",
+          "axes"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "record_kind",
+    "execution_enabled",
+    "decision_id",
+    "task_contract_id",
+    "issue_id",
+    "proposal_id",
+    "actor",
+    "observation_ids",
+    "affected_ids",
+    "operation",
+    "axes",
+    "processing_state",
+    "reason",
+    "expected_catalogue_revision",
+    "catalogue_revision_after",
+    "memberships_before",
+    "memberships_after",
+    "input_versions",
+    "recorded_at",
+    "idempotency_key",
+    "elapsed_person_seconds"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "record_kind": {
+            "const": "engineering_simulation"
+          }
+        },
+        "required": [
+          "record_kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "execution_enabled": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "item_axes"
+        ]
+      },
+      "then": {
+        "properties": {
+          "axes": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "axes": {
+            "$ref": "common.schema.json#/$defs/decision_axes"
+          }
+        }
+      }
+    }
+  ]
+}

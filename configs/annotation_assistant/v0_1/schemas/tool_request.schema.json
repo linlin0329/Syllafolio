@@ -1,0 +1,669 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/annotation-assistant/v0.1/schemas/tool_request.schema.json",
+  "title": "tool_request",
+  "description": "Offline structural contract; it does not run computation, authenticate a session or produce human judgments. Cross-object and permission guards require separate validation.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "0.1.0"
+    },
+    "request_id": {
+      "$ref": "common.schema.json#/$defs/id"
+    },
+    "task_contract_id": {
+      "$ref": "common.schema.json#/$defs/id"
+    },
+    "tool_name": {
+      "enum": [
+        "get_task_state",
+        "record_human_observation",
+        "get_protocol_guidance",
+        "query_neighbors",
+        "build_comparison_bundle",
+        "open_review_issue",
+        "start_local_job",
+        "get_job",
+        "cancel_job",
+        "prepare_review_proposal",
+        "save_checkpoint",
+        "inspect_completion",
+        "commit_human_decision",
+        "set_review_status",
+        "export_task_record"
+      ]
+    },
+    "expected_revision": {
+      "anyOf": [
+        {
+          "$ref": "common.schema.json#/$defs/revision"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "idempotency_key": {
+      "anyOf": [
+        {
+          "$ref": "common.schema.json#/$defs/id"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "arguments": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "request_id",
+    "task_contract_id",
+    "tool_name",
+    "expected_revision",
+    "idempotency_key",
+    "arguments"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "get_task_state": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "record_human_observation": {
+      "type": "object",
+      "properties": {
+        "item_ids": {
+          "$ref": "common.schema.json#/$defs/nonempty_ids"
+        },
+        "original_text": {
+          "$ref": "common.schema.json#/$defs/text"
+        },
+        "input_versions": {
+          "$ref": "common.schema.json#/$defs/input_versions"
+        }
+      },
+      "required": [
+        "item_ids",
+        "original_text",
+        "input_versions"
+      ],
+      "additionalProperties": false
+    },
+    "get_protocol_guidance": {
+      "type": "object",
+      "properties": {
+        "question": {
+          "$ref": "common.schema.json#/$defs/text"
+        },
+        "step_ids": {
+          "$ref": "common.schema.json#/$defs/ids"
+        }
+      },
+      "required": [
+        "question",
+        "step_ids"
+      ],
+      "additionalProperties": false
+    },
+    "query_neighbors": {
+      "type": "object",
+      "properties": {
+        "item_ids": {
+          "$ref": "common.schema.json#/$defs/nonempty_ids"
+        },
+        "scope_ids": {
+          "$ref": "common.schema.json#/$defs/nonempty_ids"
+        },
+        "preset_id": {
+          "$ref": "common.schema.json#/$defs/id"
+        },
+        "k": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "item_ids",
+        "scope_ids",
+        "preset_id",
+        "k"
+      ],
+      "additionalProperties": false
+    },
+    "build_comparison_bundle": {
+      "type": "object",
+      "properties": {
+        "item_ids": {
+          "$ref": "common.schema.json#/$defs/nonempty_ids"
+        },
+        "comparison_ids": {
+          "$ref": "common.schema.json#/$defs/ids"
+        },
+        "view_preset": {
+          "$ref": "common.schema.json#/$defs/id"
+        }
+      },
+      "required": [
+        "item_ids",
+        "comparison_ids",
+        "view_preset"
+      ],
+      "additionalProperties": false
+    },
+    "open_review_issue": {
+      "type": "object",
+      "properties": {
+        "question": {
+          "$ref": "common.schema.json#/$defs/text"
+        },
+        "origin_observation_ids": {
+          "$ref": "common.schema.json#/$defs/ids"
+        },
+        "target_ids": {
+          "$ref": "common.schema.json#/$defs/nonempty_ids"
+        },
+        "fit_ids": {
+          "$ref": "common.schema.json#/$defs/ids"
+        },
+        "comparison_ids": {
+          "$ref": "common.schema.json#/$defs/ids"
+        },
+        "eligible_change_ids": {
+          "$ref": "common.schema.json#/$defs/ids"
+        },
+        "action": {
+          "$ref": "common.schema.json#/$defs/action"
+        },
+        "scope_reason": {
+          "$ref": "common.schema.json#/$defs/text"
+        },
+        "input_versions": {
+          "$ref": "common.schema.json#/$defs/input_versions"
+        }
+      },
+      "required": [
+        "question",
+        "origin_observation_ids",
+        "target_ids",
+        "fit_ids",
+        "comparison_ids",
+        "eligible_change_ids",
+        "action",
+        "scope_reason",
+        "input_versions"
+      ],
+      "additionalProperties": false
+    },
+    "start_local_job": {
+      "type": "object",
+      "properties": {
+        "issue_id": {
+          "$ref": "common.schema.json#/$defs/id"
+        },
+        "config_id": {
+          "$ref": "common.schema.json#/$defs/id"
+        }
+      },
+      "required": [
+        "issue_id",
+        "config_id"
+      ],
+      "additionalProperties": false
+    },
+    "get_job": {
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "$ref": "common.schema.json#/$defs/id"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "additionalProperties": false
+    },
+    "cancel_job": {
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "$ref": "common.schema.json#/$defs/id"
+        },
+        "reason": {
+          "$ref": "common.schema.json#/$defs/text"
+        }
+      },
+      "required": [
+        "job_id",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "prepare_review_proposal": {
+      "type": "object",
+      "properties": {
+        "issue_id": {
+          "$ref": "common.schema.json#/$defs/id"
+        },
+        "result_ids": {
+          "$ref": "common.schema.json#/$defs/ids"
+        },
+        "observation_ids": {
+          "$ref": "common.schema.json#/$defs/ids"
+        },
+        "protocol_refs": {
+          "$ref": "common.schema.json#/$defs/ids"
+        },
+        "review_ids": {
+          "$ref": "common.schema.json#/$defs/nonempty_ids"
+        }
+      },
+      "required": [
+        "issue_id",
+        "result_ids",
+        "observation_ids",
+        "protocol_refs",
+        "review_ids"
+      ],
+      "additionalProperties": false
+    },
+    "save_checkpoint": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "$ref": "common.schema.json#/$defs/text"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "inspect_completion": {
+      "type": "object",
+      "properties": {
+        "object_kind": {
+          "enum": [
+            "issue",
+            "catalogue"
+          ]
+        },
+        "object_id": {
+          "$ref": "common.schema.json#/$defs/id"
+        }
+      },
+      "required": [
+        "object_kind",
+        "object_id"
+      ],
+      "additionalProperties": false
+    },
+    "commit_human_decision": {
+      "type": "object",
+      "properties": {
+        "issue_id": {
+          "$ref": "common.schema.json#/$defs/id"
+        },
+        "proposal_id": {
+          "anyOf": [
+            {
+              "$ref": "common.schema.json#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observation_ids": {
+          "$ref": "common.schema.json#/$defs/ids"
+        },
+        "affected_ids": {
+          "$ref": "common.schema.json#/$defs/nonempty_ids"
+        },
+        "operation": {
+          "$ref": "common.schema.json#/$defs/operation"
+        },
+        "axes": {
+          "description": "One shared three-axis judgment applies to all affected_ids; this field must be null when item_axes is supplied.",
+          "anyOf": [
+            {
+              "$ref": "common.schema.json#/$defs/decision_axes"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "processing_state": {
+          "$ref": "common.schema.json#/$defs/processing_state"
+        },
+        "reason": {
+          "$ref": "common.schema.json#/$defs/text"
+        },
+        "expected_catalogue_revision": {
+          "$ref": "common.schema.json#/$defs/revision"
+        },
+        "memberships_before": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/type_membership"
+          }
+        },
+        "memberships_after": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/type_membership"
+          }
+        },
+        "item_axes": {
+          "description": "Per-syllable judgments for heterogeneous batches such as type splitting; the semantic validator requires each affected_id exactly once and rejects extra items.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "item_id": {
+                "$ref": "common.schema.json#/$defs/id"
+              },
+              "axes": {
+                "$ref": "common.schema.json#/$defs/decision_axes"
+              }
+            },
+            "required": [
+              "item_id",
+              "axes"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "issue_id",
+        "proposal_id",
+        "observation_ids",
+        "affected_ids",
+        "operation",
+        "axes",
+        "processing_state",
+        "reason",
+        "expected_catalogue_revision",
+        "memberships_before",
+        "memberships_after"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "item_axes"
+            ]
+          },
+          "then": {
+            "properties": {
+              "axes": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "axes": {
+                "$ref": "common.schema.json#/$defs/decision_axes"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "set_review_status": {
+      "type": "object",
+      "properties": {
+        "object_kind": {
+          "enum": [
+            "issue",
+            "catalogue"
+          ]
+        },
+        "object_id": {
+          "$ref": "common.schema.json#/$defs/id"
+        },
+        "to_state": {
+          "enum": [
+            "open",
+            "comparison_ready",
+            "under_human_review",
+            "decided",
+            "reviewed_unresolved",
+            "unfinished",
+            "working",
+            "checkpoint",
+            "scoped_complete"
+          ]
+        },
+        "event": {
+          "enum": [
+            "advance",
+            "pause_unfinished",
+            "resume",
+            "close_decided",
+            "close_unresolved",
+            "save_checkpoint",
+            "complete_scope",
+            "reopen"
+          ]
+        },
+        "reason": {
+          "$ref": "common.schema.json#/$defs/text"
+        },
+        "affected_ids": {
+          "$ref": "common.schema.json#/$defs/ids"
+        },
+        "parent_object_id": {
+          "anyOf": [
+            {
+              "$ref": "common.schema.json#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expected_catalogue_revision": {
+          "$ref": "common.schema.json#/$defs/revision"
+        }
+      },
+      "required": [
+        "object_kind",
+        "object_id",
+        "to_state",
+        "event",
+        "reason",
+        "affected_ids",
+        "parent_object_id",
+        "expected_catalogue_revision"
+      ],
+      "additionalProperties": false
+    },
+    "export_task_record": {
+      "type": "object",
+      "properties": {
+        "locked_revision": {
+          "$ref": "common.schema.json#/$defs/revision"
+        },
+        "export_scope": {
+          "enum": [
+            "operator_records",
+            "coordinator_records",
+            "reference_records",
+            "scoring_records"
+          ]
+        },
+        "destination_slot": {
+          "$ref": "common.schema.json#/$defs/id"
+        }
+      },
+      "required": [
+        "locked_revision",
+        "export_scope",
+        "destination_slot"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "tool_name": {
+          "const": "get_task_state"
+        },
+        "arguments": {
+          "$ref": "#/$defs/get_task_state"
+        }
+      }
+    },
+    {
+      "properties": {
+        "tool_name": {
+          "const": "record_human_observation"
+        },
+        "arguments": {
+          "$ref": "#/$defs/record_human_observation"
+        }
+      }
+    },
+    {
+      "properties": {
+        "tool_name": {
+          "const": "get_protocol_guidance"
+        },
+        "arguments": {
+          "$ref": "#/$defs/get_protocol_guidance"
+        }
+      }
+    },
+    {
+      "properties": {
+        "tool_name": {
+          "const": "query_neighbors"
+        },
+        "arguments": {
+          "$ref": "#/$defs/query_neighbors"
+        }
+      }
+    },
+    {
+      "properties": {
+        "tool_name": {
+          "const": "build_comparison_bundle"
+        },
+        "arguments": {
+          "$ref": "#/$defs/build_comparison_bundle"
+        }
+      }
+    },
+    {
+      "properties": {
+        "tool_name": {
+          "const": "open_review_issue"
+        },
+        "arguments": {
+          "$ref": "#/$defs/open_review_issue"
+        }
+      }
+    },
+    {
+      "properties": {
+        "tool_name": {
+          "const": "start_local_job"
+        },
+        "arguments": {
+          "$ref": "#/$defs/start_local_job"
+        }
+      }
+    },
+    {
+      "properties": {
+        "tool_name": {
+          "const": "get_job"
+        },
+        "arguments": {
+          "$ref": "#/$defs/get_job"
+        }
+      }
+    },
+    {
+      "properties": {
+        "tool_name": {
+          "const": "cancel_job"
+        },
+        "arguments": {
+          "$ref": "#/$defs/cancel_job"
+        }
+      }
+    },
+    {
+      "properties": {
+        "tool_name": {
+          "const": "prepare_review_proposal"
+        },
+        "arguments": {
+          "$ref": "#/$defs/prepare_review_proposal"
+        }
+      }
+    },
+    {
+      "properties": {
+        "tool_name": {
+          "const": "save_checkpoint"
+        },
+        "arguments": {
+          "$ref": "#/$defs/save_checkpoint"
+        }
+      }
+    },
+    {
+      "properties": {
+        "tool_name": {
+          "const": "inspect_completion"
+        },
+        "arguments": {
+          "$ref": "#/$defs/inspect_completion"
+        }
+      }
+    },
+    {
+      "properties": {
+        "tool_name": {
+          "const": "commit_human_decision"
+        },
+        "arguments": {
+          "$ref": "#/$defs/commit_human_decision"
+        }
+      }
+    },
+    {
+      "properties": {
+        "tool_name": {
+          "const": "set_review_status"
+        },
+        "arguments": {
+          "$ref": "#/$defs/set_review_status"
+        }
+      }
+    },
+    {
+      "properties": {
+        "tool_name": {
+          "const": "export_task_record"
+        },
+        "arguments": {
+          "$ref": "#/$defs/export_task_record"
+        }
+      }
+    }
+  ]
+}

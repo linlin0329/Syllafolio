@@ -1,0 +1,366 @@
+{
+  "schema_version": "0.1.0",
+  "status": "P0_CONTRACT_ONLY",
+  "execution_enabled": false,
+  "description": "Static permitted transitions and semantic guards, checked by validators and services rather than used as runtime state storage. Reopening creates a new revision without rewriting earlier terminal states.",
+  "machines": {
+    "job": {
+      "initial": "queued",
+      "states": [
+        "queued",
+        "running",
+        "succeeded",
+        "failed",
+        "cancel_requested",
+        "cancelled"
+      ],
+      "terminal": [
+        "succeeded",
+        "failed",
+        "cancelled"
+      ],
+      "transitions": [
+        {
+          "from": "queued",
+          "to": "running",
+          "event": "advance",
+          "allowed_roles": [
+            "system"
+          ],
+          "guards": [
+            "same_input_snapshot",
+            "runtime_execution_authorized",
+            "budget_and_deadline"
+          ]
+        },
+        {
+          "from": "queued",
+          "to": "cancel_requested",
+          "event": "request_cancel",
+          "allowed_roles": [
+            "assistant",
+            "operator"
+          ],
+          "guards": [
+            "job_owned_by_task"
+          ]
+        },
+        {
+          "from": "running",
+          "to": "cancel_requested",
+          "event": "request_cancel",
+          "allowed_roles": [
+            "assistant",
+            "operator"
+          ],
+          "guards": [
+            "job_owned_by_task"
+          ]
+        },
+        {
+          "from": "cancel_requested",
+          "to": "cancelled",
+          "event": "acknowledge_cancel",
+          "allowed_roles": [
+            "system"
+          ],
+          "guards": [
+            "worker_confirmed_stopped"
+          ]
+        },
+        {
+          "from": "queued",
+          "to": "failed",
+          "event": "fail",
+          "allowed_roles": [
+            "system"
+          ],
+          "guards": [
+            "failure_receipt"
+          ]
+        },
+        {
+          "from": "running",
+          "to": "failed",
+          "event": "fail",
+          "allowed_roles": [
+            "system"
+          ],
+          "guards": [
+            "failure_receipt"
+          ]
+        },
+        {
+          "from": "running",
+          "to": "succeeded",
+          "event": "succeed",
+          "allowed_roles": [
+            "system"
+          ],
+          "guards": [
+            "outputs_complete_and_valid"
+          ]
+        },
+        {
+          "from": "cancel_requested",
+          "to": "failed",
+          "event": "fail",
+          "allowed_roles": [
+            "system"
+          ],
+          "guards": [
+            "failure_receipt",
+            "cancellation_race_logged"
+          ]
+        },
+        {
+          "from": "cancel_requested",
+          "to": "succeeded",
+          "event": "succeed",
+          "allowed_roles": [
+            "system"
+          ],
+          "guards": [
+            "outputs_complete_and_valid",
+            "cancellation_race_logged",
+            "no_automatic_exposure_or_commit"
+          ]
+        }
+      ]
+    },
+    "issue": {
+      "initial": "open",
+      "states": [
+        "open",
+        "comparison_ready",
+        "under_human_review",
+        "decided",
+        "reviewed_unresolved",
+        "unfinished"
+      ],
+      "terminal": [
+        "decided",
+        "reviewed_unresolved"
+      ],
+      "transitions": [
+        {
+          "from": "open",
+          "to": "comparison_ready",
+          "event": "advance",
+          "allowed_roles": [
+            "system",
+            "operator"
+          ],
+          "guards": [
+            "comparison_bundle_ready"
+          ]
+        },
+        {
+          "from": "comparison_ready",
+          "to": "under_human_review",
+          "event": "advance",
+          "allowed_roles": [
+            "operator"
+          ],
+          "guards": [
+            "actual_human_review_started"
+          ]
+        },
+        {
+          "from": "under_human_review",
+          "to": "decided",
+          "event": "close_decided",
+          "allowed_roles": [
+            "operator"
+          ],
+          "guards": [
+            "required_comparisons_complete",
+            "member_accounting_complete",
+            "affected_relations_checked",
+            "explicit_human_decision"
+          ]
+        },
+        {
+          "from": "under_human_review",
+          "to": "reviewed_unresolved",
+          "event": "close_unresolved",
+          "allowed_roles": [
+            "operator"
+          ],
+          "guards": [
+            "required_comparisons_complete",
+            "member_accounting_complete",
+            "affected_relations_checked",
+            "unresolved_level_and_missing_evidence_recorded"
+          ]
+        },
+        {
+          "from": "open",
+          "to": "unfinished",
+          "event": "pause_unfinished",
+          "allowed_roles": [
+            "operator",
+            "system"
+          ],
+          "guards": [
+            "unfinished_work_recorded"
+          ]
+        },
+        {
+          "from": "comparison_ready",
+          "to": "unfinished",
+          "event": "pause_unfinished",
+          "allowed_roles": [
+            "operator",
+            "system"
+          ],
+          "guards": [
+            "unfinished_work_recorded"
+          ]
+        },
+        {
+          "from": "under_human_review",
+          "to": "unfinished",
+          "event": "pause_unfinished",
+          "allowed_roles": [
+            "operator",
+            "system"
+          ],
+          "guards": [
+            "unfinished_work_recorded"
+          ]
+        },
+        {
+          "from": "unfinished",
+          "to": "open",
+          "event": "resume",
+          "allowed_roles": [
+            "operator"
+          ],
+          "guards": [
+            "same_or_explicit_new_version"
+          ]
+        },
+        {
+          "from": "decided",
+          "to": "open",
+          "event": "reopen",
+          "allowed_roles": [
+            "operator"
+          ],
+          "guards": [
+            "new_revision_not_overwrite",
+            "parent_object_id",
+            "new_evidence_recorded",
+            "affected_scope_recorded"
+          ]
+        },
+        {
+          "from": "reviewed_unresolved",
+          "to": "open",
+          "event": "reopen",
+          "allowed_roles": [
+            "operator"
+          ],
+          "guards": [
+            "new_revision_not_overwrite",
+            "parent_object_id",
+            "new_evidence_recorded",
+            "affected_scope_recorded"
+          ]
+        }
+      ]
+    },
+    "catalogue": {
+      "initial": "working",
+      "states": [
+        "working",
+        "checkpoint",
+        "scoped_complete"
+      ],
+      "terminal": [
+        "scoped_complete"
+      ],
+      "transitions": [
+        {
+          "from": "working",
+          "to": "checkpoint",
+          "event": "save_checkpoint",
+          "allowed_roles": [
+            "assistant",
+            "operator",
+            "system"
+          ],
+          "guards": [
+            "snapshot_only_no_scientific_completion"
+          ]
+        },
+        {
+          "from": "checkpoint",
+          "to": "working",
+          "event": "resume",
+          "allowed_roles": [
+            "operator"
+          ],
+          "guards": [
+            "same_or_explicit_new_version",
+            "deadline_policy"
+          ]
+        },
+        {
+          "from": "working",
+          "to": "scoped_complete",
+          "event": "complete_scope",
+          "allowed_roles": [
+            "operator"
+          ],
+          "guards": [
+            "required_comparisons_complete",
+            "member_accounting_complete",
+            "affected_relations_checked",
+            "quality_requirements_met",
+            "human_scope_acceptance",
+            "no_unfinished_required_work"
+          ]
+        },
+        {
+          "from": "checkpoint",
+          "to": "scoped_complete",
+          "event": "complete_scope",
+          "allowed_roles": [
+            "operator"
+          ],
+          "guards": [
+            "required_comparisons_complete",
+            "member_accounting_complete",
+            "affected_relations_checked",
+            "quality_requirements_met",
+            "human_scope_acceptance",
+            "no_unfinished_required_work"
+          ]
+        },
+        {
+          "from": "scoped_complete",
+          "to": "working",
+          "event": "reopen",
+          "allowed_roles": [
+            "operator"
+          ],
+          "guards": [
+            "new_revision_not_overwrite",
+            "parent_object_id",
+            "new_evidence_recorded",
+            "affected_scope_recorded"
+          ]
+        }
+      ]
+    }
+  },
+  "global_guards": [
+    "trusted_session_role",
+    "task_contract_scope",
+    "expected_revision",
+    "idempotency",
+    "no_deadline_backfill"
+  ]
+}
