@@ -246,7 +246,8 @@ def _verify_inspected_import(root, input_dir, plan, identity, mapping):
 
 def create_project(input_dir, project_dir, progress=None, cancelled=None, *,
                    purpose="engineering", operator_id=None, budget_seconds=DEFAULT_BUDGET,
-                   expected_source_fingerprint=None, expected_inspection_fingerprint=None):
+                   expected_source_fingerprint=None, expected_inspection_fingerprint=None,
+                   _annotation_evidence=None):
     """冻结真实已分割输入并运行现行流程a；仅新项目，失败留诊断清单。
 
     此调用包含特征提取和聚类，桌面界面应在工作线程调用。progress接收原流程a
@@ -262,7 +263,7 @@ def create_project(input_dir, project_dir, progress=None, cancelled=None, *,
     try:
         timing.progress({"stage": "starting", "message": "Inspecting the complete input before creating a project.",
                          "completed": 0, "total": 0}, progress)
-        plan = stage_a.inspect_source(input_dir)
+        plan = stage_a.inspect_source(input_dir, cancelled=cancelled)
         _require(expected_source_fingerprint is None or plan["source_fingerprint"] == expected_source_fingerprint,
                  "INPUT_CHANGED", 'The input changed after the summary inspection. Check the full scope again.')
         inspection, original_segments, original_mapping = _inspection_snapshot(input_dir, plan)
@@ -278,6 +279,8 @@ def create_project(input_dir, project_dir, progress=None, cancelled=None, *,
             raise stage_a.StageAError("CANCELLED", 'Project creation was cancelled before any output was written.')
         root, marker = _new_project(project_dir, origin="imported_audio", source_root=input_dir, policy=policy)
         timing.bind(root, marker)
+        if _annotation_evidence is not None:
+            marker["source_annotations_sha256"] = _annotation_evidence.write(root)
         _write_inspection(root, marker, inspection, original_segments, original_mapping)
         current_inspection, _raw, _mapping = _inspection_snapshot(input_dir, plan)
         _require(current_inspection == inspection, "INPUT_CHANGED", 'The reviewed input identity changed before the calculation started.')
@@ -404,6 +407,16 @@ def _validate_marker(root):
                  "PROJECT_CONTRACT", 'The project identity does not match its immutable run contract.')
     _require(_sha(root / DATASET_RELATIVE / "manifest.json") == marker.get("manifest_sha256"),
              "PROJECT_IDENTITY", 'The project input manifest has changed.')
+    if "source_annotations_sha256" in marker:
+        source_manifest = _relative_path(root, "source_annotations/import.json", must_exist=True)
+        _require(_sha(source_manifest) == marker["source_annotations_sha256"], "PROJECT_IDENTITY",
+                 "The recording interval manifest has changed.")
+        recorded = _read_json(source_manifest)
+        _require(recorded.get("annotation_file") in {"boundaries.txt", "boundaries.TextGrid"},
+                 "PROJECT_PATH", "The project annotation table path is invalid.")
+        original_table = _relative_path(root, "source_annotations/" + recorded["annotation_file"], must_exist=True)
+        _require(_sha(original_table) == recorded.get("annotation_sha256"), "PROJECT_IDENTITY",
+                 "The saved recording annotation file has changed.")
     result = stage_a.validate_stage_a(root / RUN_RELATIVE)
     _require(result["source_fingerprint"] == marker.get("source_fingerprint"),
              "PROJECT_IDENTITY", "The project's frozen source identity has changed.")

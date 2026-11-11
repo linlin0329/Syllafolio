@@ -52,6 +52,7 @@ from .annotation_desktop_sources import SourceRegistryDialog
 from .annotation_desktop_assessment import AssessmentDialog
 from .annotation_desktop_export import ExportDialog
 from .annotation_desktop_review_media import DisplayController, DisplayControlsWidget, ReviewMediaDialog
+from .annotation_desktop_interval_import import IntervalImportDialog
 
 
 DISPOSITIONS = [
@@ -208,6 +209,8 @@ class MainWindow(QMainWindow):
         self._reported_cancellations = set()
         self._after_operation = None
         self._stage_a_dialog = None
+        self._interval_import_dialog = None
+        self._interval_import_ticket = None
         self._audition_preview = None
         self._fine_review_dialog = None
         self._review_media_dialog = None
@@ -283,6 +286,7 @@ class MainWindow(QMainWindow):
         self.help_menu = self.menuBar().addMenu("Help")
         self.help_menu.setObjectName("helpMenu")
         self.import_button = self._menu_action(self.project_menu, "New project from syllables…", "importProject", self._import_dialog)
+        self.interval_import_action = self._menu_action(self.project_menu, "New project from recording and annotations…", "importRecordingAnnotations", self._show_interval_import)
         self.open_button = self._menu_action(self.project_menu, "Open project…", "openProject", self._open_dialog)
         self.backup_button = self._menu_action(self.project_menu, "Back up a project copy…", "backupProject", self._backup_dialog)
         self.export_button = self._menu_action(self.project_menu, "Export saved records…", "exportRecords", self._export_dialog)
@@ -1062,6 +1066,8 @@ class MainWindow(QMainWindow):
             self._review_media_dialog.stop()
             if hasattr(self._review_media_dialog, "set_busy"):
                 self._review_media_dialog.set_busy(True)
+        if self._interval_import_dialog is not None:
+            self._interval_import_dialog.set_busy(True)
         self.diagnostics.record_event("INFO", "Operation started.", label, self._diagnostic_context())
         self._status(label)
         self.progress.setRange(0, 0)
@@ -1167,6 +1173,9 @@ class MainWindow(QMainWindow):
         opened = self.project is not None
         available = not self._busy and self._close_coordinator.state == "open" and not self._sampling_pending
         self.import_button.setEnabled(available)
+        self.interval_import_action.setEnabled(available)
+        if self._interval_import_dialog is not None:
+            self._interval_import_dialog.set_busy(not available)
         self.open_button.setEnabled(available)
         self.backup_button.setEnabled(available)
         self.project_details_action.setEnabled(opened)
@@ -1285,6 +1294,84 @@ class MainWindow(QMainWindow):
         destination, _ = QFileDialog.getSaveFileName(self, "Choose a new project directory", str(suggestion), "Project directory (*)")
         if destination:
             self.inspect_import_path(source, destination)
+
+    def _show_interval_import(self):
+        if self._busy or self._close_coordinator.state != "open":
+            raise ValueError("Wait for the active operation before opening an import preview.")
+        self._stop_review_audio()
+        if self._interval_import_dialog is None:
+            self._interval_import_dialog = IntervalImportDialog(self, self._confirm_interval_import)
+        self._interval_import_dialog.show()
+        self._interval_import_dialog.raise_()
+        return self._interval_import_dialog
+
+    def _confirm_interval_import(self, dialog):
+        if dialog is not self._interval_import_dialog or not dialog._current() or self._busy:
+            raise ValueError("Reopen the current recording preview before creating a project.")
+        base = Path(os.environ.get("SYLLAFOLIO_PROJECTS_DIR", str(Path.home() / "SyllafolioProjects")))
+        destination, _ = QFileDialog.getSaveFileName(self, "Choose a new project directory",
+            str(base / ("SyllafolioProject-" + uuid.uuid4().hex[:6])), "Project directory (*)")
+        if not destination:
+            return
+        contract = ProjectContractDialog(self)
+        if contract.exec() != QDialog.DialogCode.Accepted:
+            return
+        selection = dialog.take_selection()
+        try:
+            started = self.import_interval_project(selection, destination, **contract.options())
+        except Exception:
+            if selection.preview is not None and dialog._current():
+                dialog.restore_selection(selection)
+            else:
+                selection.close()
+            raise
+        if started:
+            dialog.close()
+        else:
+            dialog.restore_selection(selection)
+
+    def import_interval_project(self, selection, project_dir, **contract_options):
+        """Transfer one preview through the normal drain/import/owner lifecycle."""
+        if self._interval_import_ticket is not None:
+            raise ValueError("A recording import is already pending.")
+        self._interval_import_ticket = selection
+        def start():
+            if self._interval_import_ticket is not selection:
+                return
+            self._interval_import_ticket = None
+            preview = selection.take_preview()
+            def create(progress, cancelled):
+                try:
+                    from .annotation_interval_import import create_interval_project
+                    return create_interval_project(preview, selection.tier_index, selection.include_empty,
+                        project_dir, progress=progress, cancelled=cancelled, **contract_options)
+                finally:
+                    preview.close()
+            try:
+                self._run("Import recording intervals and calculate candidates", create,
+                    self._install_project, kind="import")
+            except Exception:
+                preview.close()
+                raise
+        try:
+            accepted = self._request_transition(start)
+        except Exception:
+            if self._interval_import_ticket is selection:
+                self._interval_import_ticket = None
+            raise
+        if accepted is False:
+            self._interval_import_ticket = None
+            return False
+        return True
+
+    def _retire_interval_import(self, reason):
+        if self._interval_import_dialog is not None:
+            self._interval_import_dialog.invalidate(reason)
+
+    def _cancel_pending_interval_import(self):
+        if self._interval_import_ticket is not None:
+            selection, self._interval_import_ticket = self._interval_import_ticket, None
+            selection.close()
 
     def inspect_import_path(self, source, destination):
         def inspect(_progress, cancelled):
@@ -1766,7 +1853,7 @@ class MainWindow(QMainWindow):
         review_id = self.selected_review_id if not review.get("audition_only") and target in review.get("item_ids", []) else None
         dialog = ReviewMediaDialog(self, target, review_id, self.display_controller, context=context)
         self._review_media_dialog = dialog
-        dialog.playbackRequested.connect(lambda: self.audio.stop())
+        dialog.playbackRequested.connect(self._stop_review_audio)
         dialog.show(); dialog.raise_()
         return dialog
 
@@ -1790,6 +1877,8 @@ class MainWindow(QMainWindow):
             self.audio.stop(announce=announce)
         if self._review_media_dialog is not None:
             self._review_media_dialog.stop(announce=announce)
+        if self._interval_import_dialog is not None:
+            self._interval_import_dialog.stop(announce=announce)
 
     def _fine_submitted(self, item_id):
         if not self.project:
@@ -1960,6 +2049,7 @@ class MainWindow(QMainWindow):
         if self._transition or self._close_coordinator.state != "open":
             project.close()
             raise ValueError("A pending close cannot install another project.")
+        self._retire_interval_import("Project changed.")
         self.audio.stop()
         if self.project:
             latest = self._sample_project_state()
@@ -3472,6 +3562,8 @@ class MainWindow(QMainWindow):
             return
         if self._review_media_dialog is not None:
             self._review_media_dialog.stop()
+        if self._interval_import_dialog is not None:
+            self._interval_import_dialog.stop()
         scope = (self._page_key, self.selected_item_ids)
         if (self.audio.sink is not None and self.audio.looping == loop
                 and getattr(self, "_playback_scope", None) == scope):
@@ -3789,6 +3881,8 @@ class MainWindow(QMainWindow):
             self.project.service.end_drain()
         self._close_coordinator.abort()
         self._transition = None
+        self._cancel_pending_interval_import()
+        self._retire_interval_import("The pending close or switch was cancelled. Open a fresh recording preview.")
         if self._pool_review_dialog is not None:
             # Keep same-owner unsubmitted reason text, but renew any exception
             # choice and scope inspection when C is explicitly opened again.
@@ -3816,6 +3910,7 @@ class MainWindow(QMainWindow):
         pending = self._transition
         try:
             self._save_drafts()
+            self._retire_interval_import("Project closed or switched.")
             self._retire_review_views("Project closed or switched.")
             self._retire_workflow_views("Project closed or switched.")
             self._close_coordinator.start_closing(view)

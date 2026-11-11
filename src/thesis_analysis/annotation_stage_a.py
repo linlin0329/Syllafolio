@@ -113,7 +113,7 @@ def _audio_header(path):
     return info
 
 
-def _audio_view(path, digest, scratch, *, segment):
+def _audio_view(path, digest, scratch, *, segment, cancelled=None):
     info = _audio_header(path)
     if info.format == "MP3":
         # MPEG time indexes can estimate duration and seek to the wrong frame.
@@ -122,8 +122,10 @@ def _audio_view(path, digest, scratch, *, segment):
         decoded = Path(scratch) / (digest + ".wav")
         if not decoded.exists():
             try:
-                decode_to_wave(path, decoded, max_seconds=LIMITS["maximum_segment_seconds"] if segment else None)
+                decode_to_wave(path, decoded, max_seconds=LIMITS["maximum_segment_seconds"] if segment else None,
+                               cancelled=cancelled)
             except (RuntimeError, ValueError, OSError) as exc:
+                _cancel(cancelled)
                 raise StageAError("INVALID_AUDIO", f"{path.name}: {exc}") from exc
         pcm_info = sf.info(decoded)
         _require(pcm_info.channels == info.channels and pcm_info.samplerate == info.samplerate,
@@ -157,7 +159,7 @@ def _pcm(path, start=0, stop=None):
     return waveform, rate, digest
 
 
-def _inspect(source_dir, scratch):
+def _inspect(source_dir, scratch, cancelled=None):
     root = Path(source_dir).expanduser().resolve()
     _require(root.is_dir(), "SOURCE_DIRECTORY", "The segmented-syllable directory does not exist.")
     descriptor = root / "segments.json"
@@ -193,7 +195,9 @@ def _inspect(source_dir, scratch):
     fields = {"file", "item_id", "parent_file", "source_clip_id",
               "source_frame_start", "source_frame_stop", "raw_recording_id", "raw_recording_evidence"}
     parent_pcm = {}
+    parent_views = {}
     for index, entry in enumerate(items):
+        _cancel(cancelled)
         _require(isinstance(entry, dict) and set(entry) <= fields and "file" in entry,
                  "SOURCE_FIELDS", "The syllable entry fields do not match; historical type labels are not imported.")
         raw_id, raw_evidence = entry.get("raw_recording_id"), entry.get("raw_recording_evidence", "")
@@ -210,7 +214,7 @@ def _inspect(source_dir, scratch):
                  and original_id not in seen_ids, "DUPLICATE_ID", "Input syllable IDs must be valid and unique.")
         seen_ids.add(original_id)
         register_audio(path)
-        pcm_path, info = _audio_view(path, audio_files[path]["sha256"], scratch, segment=True)
+        pcm_path, info = _audio_view(path, audio_files[path]["sha256"], scratch, segment=True, cancelled=cancelled)
         samples, rate, pcm_sha = _pcm(pcm_path)
         _require(rate == info.samplerate and len(samples) == info.frames,
                  "INPUT_CHANGED", "The audio identity changed during reading.")
@@ -221,7 +225,10 @@ def _inspect(source_dir, scratch):
                      "SOURCE_BOUNDARY", "Parent-source mappings require integer start and stop frames.")
             parent = _inside(root, entry["parent_file"])
             register_audio(parent)
-            parent_pcm_path, parent_info = _audio_view(parent, audio_files[parent]["sha256"], scratch, segment=False)
+            if parent not in parent_views:
+                parent_views[parent] = _audio_view(parent, audio_files[parent]["sha256"], scratch,
+                                                   segment=False, cancelled=cancelled)
+            parent_pcm_path, parent_info = parent_views[parent]
             start, stop = entry["source_frame_start"], entry["source_frame_stop"]
             _require(parent_info.samplerate == rate and 0 <= start < stop <= parent_info.frames
                      and stop - start == len(samples), "SOURCE_BOUNDARY", "The parent sample rate or frame boundaries do not match the syllable.")
@@ -300,10 +307,10 @@ def _inspect(source_dir, scratch):
     return root, rows, source_files, plan
 
 
-def inspect_source(source_dir):
+def inspect_source(source_dir, *, cancelled=None):
     """核查已分割输入；解码暂存随检查结束清理，不改动原件或创建项目。"""
     with TemporaryDirectory(prefix="syl-audio-") as scratch:
-        return _inspect(source_dir, scratch)[3]
+        return _inspect(source_dir, scratch, cancelled)[3]
 
 
 def stage_source(source_dir, dest):
@@ -312,8 +319,8 @@ def stage_source(source_dir, dest):
         return _stage_source(source_dir, dest, scratch)
 
 
-def _stage_source(source_dir, dest, scratch):
-    root, rows, source_files, plan = _inspect(source_dir, scratch)
+def _stage_source(source_dir, dest, scratch, cancelled=None):
+    root, rows, source_files, plan = _inspect(source_dir, scratch, cancelled)
     dest = Path(dest).absolute()
     _require(not dest.exists() and not dest.resolve().is_relative_to(root),
              "OUTPUT_EXISTS", "Import output must be a new directory outside the source directory.")
@@ -322,6 +329,7 @@ def _stage_source(source_dir, dest, scratch):
     (dest / "parents").mkdir()
     entries, copied, mapping = [], {}, []
     for row in rows:
+        _cancel(cancelled)
         segment_name = "segments/" + row["item_id"] + row["path"].suffix.lower()
         shutil.copyfile(row["path"], dest / segment_name)
         _require(_sha(dest / segment_name) == row["segment_sha256"], "INPUT_CHANGED", "A syllable file changed during import.")
@@ -344,7 +352,7 @@ def _stage_source(source_dir, dest, scratch):
     for relative, value in source_files.items():
         _require(_sha(root / relative) == value["sha256"], "INPUT_CHANGED", "The source changed during import.")
     _write(dest / "segments.json", {"schema_version": SOURCE_SCHEMA, "items": entries})
-    _, _, new_files, imported = _inspect(dest, scratch)
+    _, _, new_files, imported = _inspect(dest, scratch, cancelled)
     _require(imported["source_fingerprint"] == plan["source_fingerprint"],
              "INPUT_IDENTITY", "The frozen import did not preserve the PCM, parent sources and frame boundaries.")
     _write(dest / "import_receipt.json", {"schema_version": "annotation-stage-a-import-v1",
@@ -354,7 +362,7 @@ def _stage_source(source_dir, dest, scratch):
            "original_mapping": mapping, "original_files": source_files,
            "upstream_import": _read(root / "import_receipt.json")
            if (root / "import_receipt.json").is_file() else None})
-    return _inspect(dest, scratch)[3]
+    return _inspect(dest, scratch, cancelled)[3]
 
 
 @lru_cache(maxsize=1)
@@ -416,7 +424,7 @@ def prepare_stage_a(source_dir, output_dir, progress=None, cancelled=None, plan_
 
 
 def _prepare_stage_a(source_dir, output_dir, progress, cancelled, plan_only, scratch):
-    plan = _inspect(source_dir, scratch)[3]
+    plan = _inspect(source_dir, scratch, cancelled)[3]
     output = Path(output_dir).absolute()
     _require(not output.exists() and not output.resolve().is_relative_to(Path(source_dir).resolve()),
              "OUTPUT_EXISTS", "Candidate output must be a new run version outside the source directory.")
@@ -426,8 +434,8 @@ def _prepare_stage_a(source_dir, output_dir, progress, cancelled, plan_only, scr
     output.mkdir(parents=True, exist_ok=False)
     _progress(progress, "freeze", "Freezing the complete input", 0, plan["item_count"])
     frozen = output / "coordinator/source"
-    _stage_source(source_dir, frozen, scratch)
-    _, rows, _, frozen_plan = _inspect(frozen, scratch)
+    _stage_source(source_dir, frozen, scratch, cancelled)
+    _, rows, _, frozen_plan = _inspect(frozen, scratch, cancelled)
     _require(plan["source_fingerprint"] == frozen_plan["source_fingerprint"],
              "INPUT_CHANGED", "The planned and frozen inputs do not match.")
     dataset, global_dir = output / "dataset", output / "global"
@@ -544,7 +552,7 @@ def _prepare_stage_a(source_dir, output_dir, progress, cancelled, plan_only, scr
     _cancel(cancelled)
     _write(dataset / "manifest.json", manifest)
     _progress(progress, "validate", "Verifying the complete input, numeric artifacts and candidate coverage")
-    result = _validate_stage_a(output, scratch)
+    result = _validate_stage_a(output, scratch, cancelled)
     _progress(progress, "ready", "Initial candidates saved. Browse microclusters and unclustered items, then begin human review.", len(rows), len(rows))
     return result
 
@@ -555,7 +563,7 @@ def validate_stage_a(output_dir):
         return _validate_stage_a(output_dir, scratch)
 
 
-def _validate_stage_a(output_dir, scratch):
+def _validate_stage_a(output_dir, scratch, cancelled=None):
     root = Path(output_dir).resolve()
     manifest_path, provenance_path = root / "dataset/manifest.json", root / "global/provenance.json"
     _require(all(p.is_file() and not p.is_symlink() for p in (
@@ -580,7 +588,7 @@ def _validate_stage_a(output_dir, scratch):
         _require(not Path(name).is_absolute() and ".." not in Path(name).parts
                  and path.resolve().is_relative_to(root) and not path.is_symlink()
                  and _sha(path) == digest, "OUTPUT_HASH", "The candidate artifact SHA does not match.")
-    frozen = _inspect(root / "coordinator/source", scratch)[3]
+    frozen = _inspect(root / "coordinator/source", scratch, cancelled)[3]
     _require(frozen["source_fingerprint"] == provenance["source_fingerprint"],
              "OUTPUT_IDENTITY", "The frozen original-input identity does not match.")
     ids = [row["item_id"] for row in manifest["items"]]
@@ -620,9 +628,13 @@ def _validate_stage_a(output_dir, scratch):
     remaining = payload["unclustered_ids"]
     _require(len(assigned + remaining) == len(set(assigned + remaining)) == len(ids)
              and set(assigned + remaining) == set(ids), "OUTPUT_COVERAGE", "Candidate groups and unclustered items do not form a complete, disjoint cover.")
+    # Each parent is already hashed in this validation pass. A recording with
+    # many intervals must not require a full-file hash for each short clip.
     for row in manifest["items"]:
+        _cancel(cancelled)
         path = (manifest_path.parent / row["wav_path"]).resolve()
-        _require(path.is_relative_to(root / "dataset") and _sha(path) == row["parent_audio_sha256"],
+        _require(path.is_relative_to(root / "dataset")
+                 and files.get(path.relative_to(root).as_posix()) == row["parent_audio_sha256"],
                  "OUTPUT_MEDIA", "The parent-source media identity does not match.")
         _, rate, pcm_sha = _pcm(path, row["source_frame_start"], row["source_frame_stop"])
         _require(rate == row["sample_rate_hz"] and pcm_sha == row["decoded_pcm_sha256"],

@@ -14,13 +14,15 @@ Double-click the installer and choose **Install**. Open **Syllafolio** from the 
 
 ## Review a project
 
-1. Choose **Project → New project from syllables…** and select your segmented mono audio input: WAV, FLAC, MP3, Ogg Vorbis or AIFF (`.aif`/`.aiff`). All files in a batch must use the same sample rate of at least 32000 Hz, and each segment must be no longer than 30 seconds. To inspect existing work, choose **Open project…** and select a properly closed project copy.
+1. Choose **Project → New project from syllables…** for a folder of segmented audio, or **Project → New project from recording and annotations…** for one recording and a TextGrid, Audacity or single-recording Raven table. Preview and audition the intervals before confirming the project details. External labels remain source references, not automatic family assignments. To inspect existing work, choose **Open project…** and select a properly closed project copy.
 2. Select a scope in **Candidate Groups**, **Global pool** or **Family reviews**, then click **Prepare group**.
 3. Use **Play** to hear the page once or **Loop** to repeat it. Click a syllable to listen to it alone, or Ctrl-click several syllables to compare them. **Fit** restores the full page and frequency range.
 4. Select a human family and edit any exceptions. **Save and next** saves the current item and advances. **Save page** submits all eligible pending items on that page.
 5. Choose **Project → Export saved records…** for JSON, or **Workspace → Catalogue delivery** for a catalogue with a manifest and an offline report.
 
 See the [user guide](tools/distribution/USER_GUIDE.md) for type definitions, checkpoints, source declarations and internal assessment.
+
+Both input routes accept mono WAV, FLAC, MP3, Ogg Vorbis and AIFF (`.aif`/`.aiff`) audio at a sample rate of at least 32000 Hz. Segmented files in a batch must share a sample rate. Each imported syllable interval must be no longer than 30 seconds; the whole recording can be longer. Channels are not mixed and audio is not resampled automatically.
 
 ## Run the source checkout
 

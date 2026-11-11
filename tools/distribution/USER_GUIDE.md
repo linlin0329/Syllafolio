@@ -4,9 +4,29 @@ Version **0.1.0-lite1** uses the supplied application source and hash-locked dep
 
 ## Start and use your own project
 
-Fully extract the package and run **Start.cmd**. In Project, create a new project or open an existing project copy. New input consists of your own segmented mono audio in WAV, FLAC, MP3, Ogg Vorbis or AIFF (`.aif`/`.aiff`) format. All files in a batch must use the same sample rate of at least 32000 Hz, and each segment must be no longer than 30 seconds. The application does not automatically mix channels or resample, and it does not use external converters to accept other formats. Use segments.json to declare parent recordings and frame boundaries explicitly. Unknown origins remain unknown; separate audio files are not automatically independent recordings.
+Fully extract the package and run **Start.cmd**. In Project, create a new project or open an existing project copy. **New project from syllables…** accepts a folder of segmented mono audio. **New project from recording and annotations…** accepts one recording with an annotation table defining the syllable intervals.
+
+Supported audio formats are WAV, FLAC, MP3, Ogg Vorbis and AIFF (`.aif`/`.aiff`). Audio must be mono at a sample rate of at least 32000 Hz; segmented files in one batch must share the same sample rate. Each imported syllable interval must be no longer than 30 seconds, while a whole recording can be longer. The application does not automatically mix channels or resample, and it does not use external converters to accept other formats. For segmented input, use segments.json to declare parent recordings and frame boundaries explicitly. Unknown origins remain unknown; separate audio files are not automatically independent recordings.
 
 Import freezes the input and computes the fixed features. It does not assign scientific human types. Use the actual operator for a daily project; retain the engineering designation for engineering work. Store projects separately from original audio. Close normally before backing up the complete project. Do not replace a project's database with another project's database or overwrite an older installation.
+
+## Import one recording with annotations
+
+Choose **Project → New project from recording and annotations…**, then select one audio recording and one of these annotation files:
+
+- **Praat TextGrid:** exported text in long or short format. Select the intended **IntervalTier**. Blank intervals are excluded by default; include them only if you intend to review them as syllables. Point tiers do not define syllable intervals.
+- **Audacity labels:** tab-separated regions with start and end times in seconds; label text is optional. Point labels are skipped rather than converted into syllables.
+- **Raven selections:** a selection table for the chosen recording only. The start/end time columns are sufficient; label text is optional. Recording associations and selection IDs are preserved when provided. The same selection shown in multiple views with matching boundaries represents one interval.
+
+For Audacity and Raven, the start and end times define the segment. Audition keeps the recording's full frequency band; table frequency bounds do not crop the audio.
+
+An empty label remains a valid region in Audacity and Raven tables; the TextGrid blank-interval option does not filter these regions.
+
+Run the preview and check that the table belongs to the chosen recording. Inspect the interval count, time boundaries and reference labels, then select rows to inspect and audition their audio. Review the refreshed preview after changing files, tier or selection options. Resolve validation errors before continuing; a preview is not a created project or a saved annotation decision.
+
+Confirm the preview, choose a new project directory, and complete the existing purpose/operator form. The application freezes the selected input and runs the fixed feature pipeline. Keep the original recording and table as your source archive. External labels remain source references: they do not create human families, assign syllables or complete reviews.
+
+With a small input such as the optional three-chirp example, the syllables may all enter **Global pool**. Right-click **Candidate Groups → Open candidate workspace…**, preview and explicitly apply the organization, then select **Global pool → Prepare group** to open the audition pages. An empty candidate-group list does not mean that the import failed.
 
 ## Listen, inspect and save
 

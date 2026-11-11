@@ -20,7 +20,7 @@ _MAX_WAV_DATA_BYTES = (1 << 32) - 256
 
 
 def decode_to_wave(source: Path, destination: Path, *,
-                   max_seconds: float | None = None) -> None:
+                   max_seconds: float | None = None, cancelled=None) -> None:
     """Decode from the beginning to EOF into a new mono FLOAT WAV.
 
     No resampling, channel mixing, amplitude normalization or audio output is
@@ -100,6 +100,8 @@ def decode_to_wave(source: Path, destination: Path, *,
             return
         try:
             while decoder.bufferAvailable():
+                if cancelled and cancelled():
+                    raise ValueError("Audio decoding was cancelled.")
                 buffer = decoder.read()
                 if not buffer.isValid() or buffer.frameCount() <= 0:
                     continue
