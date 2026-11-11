@@ -1,4 +1,4 @@
-"""Build a data-free Windows Lite release from this repository and a locked binary runtime.
+"""Build a data-free Windows release from this repository and a locked binary runtime.
 
 Standard library only. No pip, downloads, Git, or application data are used.
 """
@@ -19,7 +19,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 sys.dont_write_bytecode = True
 
-VERSION = "0.1.0-lite1"
+VERSION = "0.1.0"
 TOOLS = Path(__file__).resolve().parent
 RUNTIME_PREFIXES = ("_runtime/", "site-packages/")
 APP_FOLDERS = ("src/syllafolio", "configs/annotation_assistant",
@@ -217,14 +217,14 @@ def assemble(repository, seed, destination, runtime_lock, dependencies, inputs, 
         io_path(destination / folder).mkdir()
     data("DEPENDENCIES.json", dependencies)
     data("APP_SOURCE_MANIFEST.json", inputs)
-    data("LITE_PROFILE.json", {
-        "schema": "syllafolio-public-lite-profile-v1", "runtime_lock_sha256": digest(TOOLS / "runtime-lock.json"),
+    data("RUNTIME_PROFILE.json", {
+        "schema": "syllafolio-runtime-profile-v1", "runtime_lock_sha256": digest(TOOLS / "runtime-lock.json"),
         "runtime_files": len(runtime_lock["files"]), "runtime_policy": runtime_lock["policy"],
         "runtime_configuration_rewrite": "_runtime/python312._pth; app/src and app relative paths only",
         "application_materials": False, "included_user_projects": False, "included_acceptance_outputs": False,
         "application_source": "This repository's src/syllafolio and configs whitelist only; no seed application files."})
     build = {"schema": "syllafolio-windows-prototype-build-v1", "version": VERSION, "target": "Windows x64",
-        "python_version": runtime_lock["python_version"], "edition": "Lite", "default_start": "blank",
+        "python_version": runtime_lock["python_version"], "edition": "Desktop", "default_start": "blank",
         "included_business_data": False, "built_on": sys.platform, "windows_execution_verified": False,
         "manual_windows_acceptance": "pending; separate receipts required", "source_sha256": inputs,
         "runtime_reuse": {"type": "hash-locked external binary runtime", "dependency_count": len(dependencies),
@@ -290,7 +290,7 @@ def main():
                     failed = archive.testzip()
                     if failed:
                         raise ValueError("ZIP CRC differs: " + failed)
-                receipt = {"schema": "syllafolio-public-lite-build-v1", "status": "passed", "version": VERSION,
+                receipt = {"schema": "syllafolio-windows-build-v1", "status": "passed", "version": VERSION,
                     "archive": str(output), "bytes": output.stat().st_size, "sha256": digest(output),
                     "uncompressed_bytes": sum(io_path(destination / name).stat().st_size for name in [*published, "INTEGRITY.json"]),
                     "integrity_files": len(published), "zip_crc_passed": True, "source_sha256": inputs,

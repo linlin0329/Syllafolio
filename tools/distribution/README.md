@@ -1,4 +1,4 @@
-# Syllafolio Windows x64 Lite 0.1.0-lite1
+# Syllafolio Windows x64 0.1.0
 
 Fully extract this package, then double-click **Start.cmd**. It opens an empty workspace. No audio samples, demonstration projects, user projects or application acceptance datasets are included. Python and the fixed dependencies are private to this package; no Python/Conda installation or network download is needed.
 
@@ -10,4 +10,6 @@ The sidebar contains **Candidate Groups**, **Global pool** and **Family reviews*
 
 **Run_Checks.cmd** checks this package's integrity, dependency imports and a blank Windows window. It does not run the omitted material acceptance suite or certify audibility, annotation decisions or the complete scientific workflow. `Run_Checks.cmd --static-only` skips the window. The command prints the actual report location, including any fallback used for a read-only installation. **Record_Feedback.cmd** records only checks you actually performed.
 
-See [USER_GUIDE.md](USER_GUIDE.md). Versions and identities are in BUILD_INFO.json, APP_SOURCE_MANIFEST.json and INTEGRITY.json. LITE_PROFILE.json describes the runtime subset. Required rendering/audio backends, FFmpeg, scientific runtime resources and third-party license texts are retained. This package is an application runtime, not a general Qt SDK.
+The current-run report is `self_check.json`; the optional blank-window result is `blank_startup.json` in the same directory.
+
+See [USER_GUIDE.md](USER_GUIDE.md). Versions and identities are in BUILD_INFO.json, APP_SOURCE_MANIFEST.json and INTEGRITY.json. RUNTIME_PROFILE.json describes the runtime subset. Required rendering/audio backends, FFmpeg, scientific runtime resources and third-party license texts are retained. This package is an application runtime, not a general Qt SDK.

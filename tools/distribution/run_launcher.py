@@ -1,4 +1,4 @@
-"""Portable Lite launcher with isolated current-run logs."""
+"""Portable launcher with isolated current-run logs."""
 from pathlib import Path
 import subprocess
 import sys
@@ -14,7 +14,7 @@ def main():
     config = configure_runtime(ROOT, run_id=new_run_id("launch"))
     folder = begin_run(ROOT, "launch", config["run_id"], config)
     publish_launch(ROOT, config["run_id"], {"run_id": config["run_id"], "diagnostics_dir": str(folder), "status": "starting"})
-    print("Starting Syllafolio Lite with no example project. First import of libraries may take a moment.", flush=True)
+    print("Starting Syllafolio with no example project. First import of libraries may take a moment.", flush=True)
     print("Launch log: " + str(folder / "startup.log"), flush=True)
     code = 1
     try:
@@ -28,7 +28,7 @@ def main():
         detail = traceback.format_exc(); (folder / "startup.log").write_text(detail, encoding="utf-8")
         print(detail, file=sys.stderr)
     result = {"run_id": config["run_id"], "exit_code": code, "status": "process_exited" if code == 0 else "launch_failed",
-              "native_windows_process": sys.platform == "win32", "version": "0.1.0-lite1",
+              "native_windows_process": sys.platform == "win32", "version": "0.1.0",
               "diagnostics_dir": str(folder), "windows_acceptance_complete": False}
     atomic_json(folder / "launch_result.json", result); publish_launch(ROOT, config["run_id"], result)
     return code

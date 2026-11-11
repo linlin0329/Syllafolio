@@ -22,7 +22,7 @@ using Microsoft.Win32.SafeHandles;
 [assembly: AssemblyProduct("Syllafolio")]
 [assembly: AssemblyVersion("0.1.0.1")]
 [assembly: AssemblyFileVersion("0.1.0.3")]
-[assembly: AssemblyInformationalVersion("0.1.0-lite1")]
+[assembly: AssemblyInformationalVersion("0.1.0")]
 namespace SyllafolioInstaller
 {
     sealed class Failure : Exception
@@ -309,6 +309,7 @@ namespace SyllafolioInstaller
             }
         }
 
+        // Stable installation identity used by existing registry entries and ownership markers.
         internal const string Product = "Syllafolio-Lite";
         internal const string Marker = ".syllafolio-container.json", Manifest = "INSTALLATION.json", Pending = ".syllafolio-update-pending.json";
         internal static readonly JavaScriptSerializer Json = new JavaScriptSerializer
@@ -426,12 +427,12 @@ namespace SyllafolioInstaller
 
         internal static string Group(bool qa)
         {
-            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), qa ? "Syllafolio Lite QA" : "Syllafolio");
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), qa ? "Syllafolio QA" : "Syllafolio");
         }
 
         static string DesktopName(bool qa, int number)
         {
-            string name = qa ? "Syllafolio Lite QA" : "Syllafolio";
+            string name = qa ? "Syllafolio QA" : "Syllafolio";
             return name + (number == 1 ? "" : " (" + number.ToString(CultureInfo.InvariantCulture) + ")") + ".lnk";
         }
 
@@ -879,7 +880,7 @@ namespace SyllafolioInstaller
                     using (var k = Registry.CurrentUser.CreateSubKey(Key(o.Qa)))
                     {
                         registered = true;
-                        k.SetValue("DisplayName", o.Qa ? "Syllafolio Lite QA" : "Syllafolio");
+                        k.SetValue("DisplayName", o.Qa ? "Syllafolio QA" : "Syllafolio");
                         k.SetValue("DisplayVersion", Build.Version);
                         k.SetValue("Publisher", "Syllafolio");
                         k.SetValue("InstallLocation", app);

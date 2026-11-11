@@ -7,8 +7,8 @@ ROOT = Path(__file__).resolve().parent
 
 
 def main():
-    print("The Lite package does not include the application acceptance suite or datasets. No P1 tests were run.")
-    print("Use Run_Checks.cmd for the Lite integrity/import/blank-startup self-check.")
+    print("This distribution does not include the development acceptance suite or datasets. That suite was not run.")
+    print("Use Run_Checks.cmd for the package integrity/import/blank-startup self-check.")
     return 2
 
 

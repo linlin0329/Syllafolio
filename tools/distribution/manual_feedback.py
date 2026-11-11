@@ -20,7 +20,7 @@ def create_dialog(parent=None):
     from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox,
                                   QFormLayout, QLabel, QPlainTextEdit, QVBoxLayout)
     dialog = QDialog(parent)
-    dialog.setWindowTitle("Syllafolio Lite - feedback")
+    dialog.setWindowTitle("Syllafolio - feedback")
     dialog.resize(850, 520)
     layout = QVBoxLayout(dialog)
     label = QLabel("Record only checks you actually performed. Automatic checks do not establish audibility or annotation accuracy.")

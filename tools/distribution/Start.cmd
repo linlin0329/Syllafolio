@@ -2,7 +2,7 @@
 setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
-echo Starting Syllafolio Lite with an empty workspace.
+echo Starting Syllafolio with an empty workspace.
 "_runtime\python.exe" -B -X utf8 run_launcher.py %*
 set "result=%ERRORLEVEL%"
 if not "%result%"=="0" (

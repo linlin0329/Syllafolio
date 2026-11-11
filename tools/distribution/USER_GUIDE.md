@@ -1,6 +1,6 @@
-# Syllafolio Lite user guide
+# Syllafolio user guide
 
-Version **0.1.0-lite1** uses the supplied application source and hash-locked dependencies. It starts with an empty workspace and includes no business samples, demonstration projects or acceptance datasets. Build evidence and actual Windows acceptance are separate. Audibility, human type criteria and scientific validity require the actual user to check them.
+Version **0.1.0** uses the supplied application source and hash-locked dependencies. It starts with an empty workspace and includes no business samples, demonstration projects or acceptance datasets. Build evidence and actual Windows acceptance are separate. Audibility, human type criteria and scientific validity require the actual user to check them.
 
 ## Start and use your own project
 
@@ -63,5 +63,7 @@ Matching ordinary page drafts reconnect as unsubmitted input. If a draft is dama
 **Run_Checks.cmd** checks package integrity, imports and a blank native Windows startup. It creates no business project, runs no omitted material suite and makes no audibility claim. `--static-only` skips the window. run_p1_checks.py explains that the acceptance suite is absent and returns nonzero; it must not be reported as that suite passing.
 
 Startup and checks print the actual current-run diagnostic path. Cache, reports and UI settings use validated writable locations. Consult the receipt rather than assuming reports are under the installation folder. **Help → Project details…** shows project identity and location. Record_Feedback.cmd records actual checks and diagnostics; unperformed listening, viewing or editing remains untested.
+
+The primary self-check report is `self_check.json`. A blank-window startup check also writes `blank_startup.json` and `blank_startup.log` in that run. `RUNTIME_PROFILE.json` describes the shipped runtime subset; it is separate from a user project or a scientific result.
 
 Qt is trimmed for this application. Graphics/audio backends, FFmpeg, required runtime code, scientific resources and license texts are retained; application samples and clear third-party test sample data are omitted. Package checks do not replace human listening, type judgments or a second independent environment test.

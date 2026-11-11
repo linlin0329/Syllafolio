@@ -1,4 +1,4 @@
-"""Lite package self-check: identities, imports and optional blank Windows startup; no sample data."""
+"""Syllafolio package self-check: identities, imports and optional blank Windows startup; no sample data."""
 from pathlib import Path
 import argparse
 import hashlib
@@ -31,10 +31,10 @@ def main():
     from runtime_paths import configure_runtime
     from prototype_reports import atomic_json, begin_run, new_run_id
     from installation_lease import validate_installation_protocol
-    config = configure_runtime(ROOT, run_id=new_run_id("lite_check"))
-    folder = begin_run(ROOT, "lite_check", config["run_id"], config)
-    print("Lite self-check report: " + str(folder), flush=True)
-    report = {"schema": "syllafolio-lite-self-check-v1", "status": "starting", "runtime_paths": config,
+    config = configure_runtime(ROOT, run_id=new_run_id("self_check"))
+    folder = begin_run(ROOT, "self_check", config["run_id"], config)
+    print("Syllafolio self-check report: " + str(folder), flush=True)
+    report = {"schema": "syllafolio-self-check-v1", "status": "starting", "runtime_paths": config,
               "scope": "Package integrity/imports and blank startup only", "p1_suite_executed": False,
               "business_workflows_exercised": False, "audio_played": False, "human_audio_passed": None}
     code = 1
@@ -45,6 +45,9 @@ def main():
         mismatches = [name for name, checksum in expected.items() if digest(ROOT / name) != checksum]
         if mismatches: raise RuntimeError("Package identity differs: " + ", ".join(mismatches[:10]))
         report.update(version=build["version"], integrity_files=len(expected), integrity_passed=True)
+        if "RUNTIME_PROFILE.json" not in expected:
+            raise RuntimeError("The runtime profile is missing from the package inventory.")
+        report["runtime_profile"] = {"file": "RUNTIME_PROFILE.json", "sha256": digest(ROOT / "RUNTIME_PROFILE.json")}
         imported = {}
         for name in ("numpy", "scipy", "sklearn", "hdbscan", "umap", "soundfile", "PIL", "matplotlib",
                      "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets", "PySide6.QtMultimedia",
@@ -68,13 +71,15 @@ def main():
             report["startup_exit_code"] = child.returncode
             if child.returncode != 0: raise RuntimeError("Blank startup failed; read blank_startup.log")
             startup = json.loads((folder / "blank_startup.json").read_text(encoding="utf-8"))
+            assert startup["schema"] == "syllafolio-blank-startup-v1"
+            assert startup["version"] == build["version"]
             assert startup["status"] == "passed" and startup["project_opened"] is False
             report["blank_startup"] = startup
         report["status"] = "passed"; code = 0
     except Exception:
         report["status"] = "failed"; report["error"] = traceback.format_exc(); print(report["error"], file=sys.stderr)
-    atomic_json(folder / "lite_check.json", report)
-    print("Lite self-check " + report["status"] + ": " + str(folder / "lite_check.json"), flush=True)
+    atomic_json(folder / "self_check.json", report)
+    print("Syllafolio self-check " + report["status"] + ": " + str(folder / "self_check.json"), flush=True)
     return code
 
 

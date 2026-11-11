@@ -1,4 +1,4 @@
-"""Portable Lite entry: blank by default; open only an explicit user project."""
+"""Portable entry: blank by default; open only an explicit user project."""
 from pathlib import Path
 import argparse
 import hashlib
@@ -22,7 +22,7 @@ def main():
     if args.blank and args.project:
         parser.error("Choose --blank or --project.")
     if args.smoke_output and args.project:
-        parser.error("The Lite startup self-check only opens a blank workspace.")
+        parser.error("The startup self-check only opens a blank workspace.")
     from runtime_paths import configure_runtime
     config = configure_runtime(ROOT)
     print("Runtime paths ready. Diagnostics: " + config["diagnostics_dir"], flush=True)
@@ -31,7 +31,7 @@ def main():
     QLocale.setDefault(QLocale("en_US"))
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_DontUseNativeDialogs, True)
     application = QApplication.instance() or QApplication(sys.argv[:1])
-    application.setApplicationName("Syllafolio Lite")
+    application.setApplicationName("Syllafolio")
     token = hashlib.sha256(str(ROOT.resolve()).encode("utf-8")).hexdigest()[:12]
     settings = Path(config["cache_dir"]).parent / "ui_settings" / token
     settings.mkdir(parents=True, exist_ok=True)
@@ -42,7 +42,7 @@ def main():
         raise RuntimeError("Application source must come from this portable package.")
     build = json.loads((ROOT / "BUILD_INFO.json").read_text(encoding="utf-8"))
     window = desktop.MainWindow()
-    window.setWindowTitle("Syllafolio Lite " + build["version"])
+    window.setWindowTitle("Syllafolio " + build["version"])
     window.show()
     if args.project:
         window.open_project_path(args.project)
@@ -52,7 +52,7 @@ def main():
             try:
                 assert window.project is None and not window._busy
                 assert application.platformName() == "windows"
-                report = {"schema": "syllafolio-lite-blank-startup-v1", "status": "passed",
+                report = {"schema": "syllafolio-blank-startup-v1", "status": "passed",
                     "version": build["version"], "qt_platform": application.platformName(),
                     "actual_dpr": window.devicePixelRatioF(), "project_opened": False,
                     "source_import": desktop.__file__, "python": sys.executable,
@@ -62,7 +62,8 @@ def main():
                 window.close()
                 application.exit(0)
             except Exception as error:
-                atomic_json(args.smoke_output, {"status": "failed", "error": str(error)})
+                atomic_json(args.smoke_output, {"schema": "syllafolio-blank-startup-v1", "version": build["version"],
+                    "status": "failed", "error": str(error)})
                 application.exit(1)
         QTimer.singleShot(800, finish)
     return application.exec()

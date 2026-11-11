@@ -16,8 +16,7 @@ from zipfile import ZipFile
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.1.0-lite1"
-PAYLOAD_SHA = "8c27bab831ed36150f8bd8c94544106425910d71364f91c730d035429225eb24"
+VERSION = "0.1.0"
 FOOTER_MAGIC = b"SYLLAFOLIO_SFX01"
 
 
@@ -59,7 +58,7 @@ def inspect_payload(path, expected):
             raise ValueError("Payload ZIP and its integrity inventory differ")
         build = json.loads(archive.read(root + "/BUILD_INFO.json"))
         if build["version"] != VERSION or build.get("default_start") != "blank" or build.get("included_business_data") is not False:
-            raise ValueError("Expected the audited blank, data-free Lite version")
+            raise ValueError("Expected the audited blank, data-free Windows version")
         return {"sha256": actual, "bytes": path.stat().st_size, "root": root,
                 "integrity_sha256": hashlib.sha256(raw).hexdigest(), "file_count": len(integrity),
                 "uncompressed_bytes": sum(info.file_size for info in archive.infolist())}
@@ -68,7 +67,7 @@ def inspect_payload(path, expected):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--payload", required=True, type=Path)
-    parser.add_argument("--expected-payload-sha256", default=PAYLOAD_SHA)
+    parser.add_argument("--expected-payload-sha256", required=True, help="Trusted SHA-256 from the portable build receipt")
     parser.add_argument("--launcher", required=True, type=Path)
     parser.add_argument("--icon", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
