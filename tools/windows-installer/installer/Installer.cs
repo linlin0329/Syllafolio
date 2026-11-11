@@ -21,7 +21,7 @@ using Microsoft.Win32.SafeHandles;
 [assembly: AssemblyTitle("Syllafolio Setup")]
 [assembly: AssemblyProduct("Syllafolio")]
 [assembly: AssemblyVersion("0.1.0.1")]
-[assembly: AssemblyFileVersion("0.1.0.1")]
+[assembly: AssemblyFileVersion("0.1.0.3")]
 [assembly: AssemblyInformationalVersion("0.1.0-lite1")]
 namespace SyllafolioInstaller
 {
@@ -39,6 +39,7 @@ namespace SyllafolioInstaller
     sealed class Options
     {
         internal bool Qa, Quiet, Uninstall, Cleanup;
+        internal bool DesktopShortcut = true;
         internal string Target, Receipt, FailStage, ExpectedSha;
         internal int WaitPid;
         internal static Options Parse(string[] args)
@@ -51,6 +52,8 @@ namespace SyllafolioInstaller
                     o.Qa = true;
                 else if (a == "--quiet")
                     o.Quiet = true;
+                else if (a == "--no-desktop-shortcut")
+                    o.DesktopShortcut = false;
                 else if (a == "--uninstall")
                     o.Uninstall = true;
                 else if (a == "--cleanup-cache")
@@ -111,6 +114,8 @@ namespace SyllafolioInstaller
         public string cache_sha256 { get; set; }
         public Dictionary<string, string> files { get; set; }
         public Dictionary<string, string> shortcuts { get; set; }
+        public string desktop_shortcut_path { get; set; }
+        public string desktop_shortcut_sha256 { get; set; }
     }
 
     sealed class ProductMutex : IDisposable
@@ -424,6 +429,69 @@ namespace SyllafolioInstaller
             return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), qa ? "Syllafolio Lite QA" : "Syllafolio");
         }
 
+        static string DesktopName(bool qa, int number)
+        {
+            string name = qa ? "Syllafolio Lite QA" : "Syllafolio";
+            return name + (number == 1 ? "" : " (" + number.ToString(CultureInfo.InvariantCulture) + ")") + ".lnk";
+        }
+
+        // Publish a copy of the working Start Menu link on the actual, possibly
+        // redirected desktop. Move never replaces an existing destination.
+        static string PublishDesktopShortcut(string desktop, string source, bool qa)
+        {
+            if (String.IsNullOrEmpty(desktop) || !Directory.Exists(Long(desktop)))
+                throw new IOException("The desktop folder is unavailable.");
+            string temporary = Path.Combine(desktop, ".syllafolio-" + Guid.NewGuid().ToString("N") + ".tmp");
+            using (var input = File.OpenRead(Long(source)))
+            {
+                var output = new FileStream(Long(temporary), FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                try
+                {
+                    using (output) input.CopyTo(output);
+                    for (int number = 1; number <= 99; number++)
+                    {
+                        string path = Path.Combine(desktop, DesktopName(qa, number));
+                        if (File.Exists(Long(path)) || Directory.Exists(Long(path))) continue;
+                        try { File.Move(Long(temporary), Long(path)); }
+                        catch (IOException e)
+                        {
+                            int code = e.HResult & 0xffff;
+                            if (code == 80 || code == 183) continue;
+                            throw;
+                        }
+                        temporary = null;
+                        return path;
+                    }
+                    throw new IOException("No free desktop shortcut name is available.");
+                }
+                finally
+                {
+                    if (temporary != null) File.Delete(Long(temporary));
+                }
+            }
+        }
+
+        // A moved desktop, renamed link or user edit must not be removed by
+        // uninstall or rollback. Older manifests have no desktop link at all.
+        static bool RemoveDesktopShortcut(string desktop, bool qa, string path, string sha)
+        {
+            if (path == null) return true;
+            if (String.IsNullOrEmpty(desktop) || String.IsNullOrEmpty(sha)
+                || !Same(Path.GetDirectoryName(path), desktop)
+                || !Enumerable.Range(1, 99).Any(n => String.Equals(Path.GetFileName(path), DesktopName(qa, n), StringComparison.OrdinalIgnoreCase)))
+                return false;
+            try
+            {
+                if (!File.Exists(Long(path))) return !Directory.Exists(Long(path));
+                if ((File.GetAttributes(Long(path)) & FileAttributes.ReparsePoint) != 0 || HashFile(path) != sha)
+                    return false;
+                File.Delete(Long(path));
+                return true;
+            }
+            catch (IOException) { return false; }
+            catch (UnauthorizedAccessException) { return false; }
+        }
+
         static string Cache(bool qa)
         {
             return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Syllafolio", "Installer", qa ? "Syllafolio-QA-Uninstall.exe" : "Syllafolio-Uninstall.exe");
@@ -733,6 +801,7 @@ namespace SyllafolioInstaller
                     throw new Failure(23, "START_MENU_EXISTS", "The product Start Menu group already contains entries; it will not be replaced.");
                 string instance = Guid.NewGuid().ToString("N").Substring(0, 8), app = Path.Combine(root, "app-" + instance), stage = null, cache = Cache(o.Qa);
                 bool ownerCreated = false, published = false, registered = false, cacheCreated = false;
+                string desktopLink = null, desktopSha = null, desktopWarning = null;
                 var links = new Dictionary<string, string>();
                 Dictionary<string, string> files = null;
                 try
@@ -775,10 +844,21 @@ namespace SyllafolioInstaller
                     published = true;
                     FailAt(o, "after_publish");
                     string command = Q(cache) + " --uninstall --target " + Q(app) + (o.Qa ? " --qa" : "");
-                    Shortcut(Path.Combine(group, "Syllafolio.lnk"), Path.Combine(app, "Syllafolio.exe"), "", app);
-                    links[Path.Combine(group, "Syllafolio.lnk")] = HashFile(Path.Combine(group, "Syllafolio.lnk"));
+                    string appLink = Path.Combine(group, "Syllafolio.lnk");
+                    Shortcut(appLink, Path.Combine(app, "Syllafolio.exe"), "", app);
+                    links[appLink] = HashFile(appLink);
                     Shortcut(Path.Combine(group, "Uninstall Syllafolio.lnk"), cache, "--uninstall --target " + Q(app) + (o.Qa ? " --qa" : ""), app);
                     links[Path.Combine(group, "Uninstall Syllafolio.lnk")] = HashFile(Path.Combine(group, "Uninstall Syllafolio.lnk"));
+                    if (o.DesktopShortcut)
+                    {
+                        try
+                        {
+                            desktopLink = PublishDesktopShortcut(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), appLink, o.Qa);
+                            desktopSha = links[appLink];
+                        }
+                        catch (IOException) { desktopWarning = "The desktop shortcut could not be created. Use the Start menu to open Syllafolio."; }
+                        catch (UnauthorizedAccessException) { desktopWarning = "Setup cannot write to your desktop. Use the Start menu to open Syllafolio."; }
+                    }
                     var manifest = new InstallManifest
                     {
                         schema = "syllafolio-current-user-install-v1",
@@ -791,7 +871,9 @@ namespace SyllafolioInstaller
                         cache_path = cache,
                         cache_sha256 = Build.UninstallSha,
                         files = files,
-                        shortcuts = links
+                        shortcuts = links,
+                        desktop_shortcut_path = desktopLink,
+                        desktop_shortcut_sha256 = desktopSha
                     };
                     Save(Path.Combine(app, Manifest), manifest);
                     using (var k = Registry.CurrentUser.CreateSubKey(Key(o.Qa)))
@@ -854,6 +936,9 @@ namespace SyllafolioInstaller
                             "start_menu_group",
                             group
                         },
+                        { "desktop_shortcut_requested", o.DesktopShortcut },
+                        { "desktop_shortcut_path", desktopLink },
+                        { "desktop_shortcut_warning", desktopWarning },
                         {
                             "uninstall_string",
                             command
@@ -886,6 +971,7 @@ namespace SyllafolioInstaller
                 }
                 catch
                 {
+                    RemoveDesktopShortcut(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), o.Qa, desktopLink, desktopSha);
                     if (registered)
                         Registry.CurrentUser.DeleteSubKeyTree(Key(o.Qa), false);
                     foreach (var p in links)
@@ -978,6 +1064,9 @@ namespace SyllafolioInstaller
                     }
                 }
 
+                if (!RemoveDesktopShortcut(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                                           o.Qa, m.desktop_shortcut_path, m.desktop_shortcut_sha256))
+                    preserved.Add(m.desktop_shortcut_path);
                 string group = Group(o.Qa);
                 if (Directory.Exists(Long(group)) && Directory.GetFileSystemEntries(Long(group)).Length == 0)
                     Directory.Delete(Long(group));
@@ -1128,6 +1217,160 @@ namespace SyllafolioInstaller
         }
     }
 
+    // The installer is authored at 96 DPI. Keep actions in their own row so
+    // wrapped text and scrolling never push Install, Cancel or Close off screen.
+    sealed class SetupPage
+    {
+        [DllImport("user32.dll")]
+        private static extern uint GetDpiForWindow(IntPtr window);
+
+        readonly Form form;
+        readonly TableLayoutPanel shell;
+        readonly Panel viewport;
+        readonly Panel body;
+        readonly FlowLayoutPanel actions;
+        readonly List<Control> rows = new List<Control>();
+        bool arranging;
+        bool scrollRefreshPending;
+
+        internal SetupPage(Form owner)
+        {
+            form = owner;
+            form.SuspendLayout();
+            form.Font = new Font("Segoe UI", 10);
+            form.AutoScaleDimensions = new SizeF(96, 96);
+            form.AutoScaleMode = AutoScaleMode.Dpi;
+            shell = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Padding = new Padding(20) };
+            shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            viewport = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Margin = Padding.Empty };
+            body = new Panel { Dock = DockStyle.Top };
+            actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                FlowDirection = FlowDirection.RightToLeft, WrapContents = false, Margin = new Padding(0, 8, 0, 0) };
+            viewport.Controls.Add(body);
+            shell.Controls.Add(viewport, 0, 0);
+            shell.Controls.Add(actions, 0, 1);
+            form.Controls.Add(shell);
+            body.ClientSizeChanged += delegate { ArrangeRows(); };
+        }
+
+        void ArrangeRows()
+        {
+            if (arranging || body.ClientSize.Width <= 0) return;
+            arranging = true;
+            try
+            {
+                int width;
+                do
+                {
+                    width = body.ClientSize.Width;
+                    int top = 0;
+                    foreach (Control row in rows)
+                    {
+                        if (!row.Visible) continue;
+                        int height = row is ProgressBar ? row.Height : row.GetPreferredSize(new Size(width, 0)).Height;
+                        row.SetBounds(0, top, width, height);
+                        top += height + row.Margin.Bottom;
+                    }
+                    body.Height = top;
+                    // The scrollbar can reduce the wrapping width by one scrollbar.
+                    // Publish the remeasured extent, including the very last row.
+                    if (viewport.AutoScrollMinSize.Height != top)
+                    {
+                        viewport.AutoScrollMinSize = new Size(0, top);
+                        RefreshScrollRangeAfterLayout();
+                    }
+                } while (body.ClientSize.Width > 0 && body.ClientSize.Width != width);
+            }
+            finally { arranging = false; }
+        }
+
+        void RefreshScrollRangeAfterLayout()
+        {
+            // When a scrollbar first appears, WinForms can finish its outer layout
+            // using the height measured before that scrollbar narrowed the text.
+            if (scrollRefreshPending || !viewport.IsHandleCreated || viewport.IsDisposed) return;
+            scrollRefreshPending = true;
+            viewport.BeginInvoke(new MethodInvoker(delegate {
+                scrollRefreshPending = false;
+                if (!viewport.IsDisposed) viewport.PerformLayout();
+            }));
+        }
+
+        internal void Row(Control control, int gap)
+        {
+            control.Margin = new Padding(0, 0, 0, gap);
+            control.Dock = DockStyle.None;
+            control.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+            control.AutoSize = false;
+            rows.Add(control);
+            body.Controls.Add(control);
+            control.TextChanged += delegate { ArrangeRows(); };
+            control.VisibleChanged += delegate { ArrangeRows(); };
+            control.FontChanged += delegate { ArrangeRows(); };
+        }
+
+        internal Label Text(string text, int gap, bool heading = false)
+        {
+            var label = new Label { Text = text, AutoSize = true, UseMnemonic = false, Anchor = AnchorStyles.Left | AnchorStyles.Right };
+            if (heading) label.Font = new Font(form.Font.FontFamily, 15, FontStyle.Bold);
+            Row(label, gap);
+            return label;
+        }
+
+        internal void Fill(Control control)
+        {
+            body.Visible = false;
+            viewport.AutoScroll = false;
+            control.Dock = DockStyle.Fill;
+            viewport.Controls.Add(control);
+        }
+
+        internal static Button Button(string caption)
+        {
+            return new Button { Text = caption, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                MinimumSize = new Size(84, 30), Padding = new Padding(10, 3, 10, 3) };
+        }
+
+        internal void Finish(int width, int height, params Button[] buttons)
+        {
+            // RightToLeft places the last action against the right margin.
+            for (int i = buttons.Length - 1; i >= 0; --i)
+            {
+                buttons[i].Margin = new Padding(i == 0 ? 0 : 8, 0, 0, 0);
+                actions.Controls.Add(buttons[i]);
+            }
+            form.ClientSize = new Size(width, height);
+            form.ResumeLayout(true);
+            form.Load += delegate {
+                float dpi;
+                try { dpi = GetDpiForWindow(form.Handle); }
+                catch (EntryPointNotFoundException) { using (var g = form.CreateGraphics()) dpi = g.DpiX; }
+                float scale = dpi > 0 ? dpi / 96f : 1f;
+                Rectangle area = Screen.FromControl(form.Owner ?? form).WorkingArea;
+                Size frame = form.Size - form.ClientSize;
+                Size limit = new Size(Math.Max(1, area.Width - frame.Width), Math.Max(1, area.Height - frame.Height));
+                form.MinimumSize = new Size(Math.Min(area.Width, (int)Math.Ceiling(360 * scale) + frame.Width),
+                                            Math.Min(area.Height, (int)Math.Ceiling(165 * scale) + frame.Height));
+                form.ClientSize = new Size(Math.Min(limit.Width, (int)Math.Ceiling(width * scale)),
+                                           Math.Min(limit.Height, (int)Math.Ceiling(height * scale)));
+                form.PerformLayout();
+                ArrangeRows();
+                if (body.Visible)
+                {
+                    int needed = body.Height + form.ClientSize.Height - viewport.ClientSize.Height;
+                    if (needed > form.ClientSize.Height)
+                        form.ClientSize = new Size(form.ClientSize.Width, Math.Min(needed, limit.Height));
+                }
+                Rectangle anchor = form.Owner == null ? area : form.Owner.Bounds;
+                form.Location = new Point(Math.Max(area.Left, Math.Min(area.Right - form.Width, anchor.Left + (anchor.Width - form.Width) / 2)),
+                                          Math.Max(area.Top, Math.Min(area.Bottom - form.Height, anchor.Top + (anchor.Height - form.Height) / 2)));
+            };
+            form.Shown += delegate { ArrangeRows(); };
+        }
+    }
+
     static class EnglishDialogs
     {
         internal static void Error(string message)
@@ -1135,31 +1378,19 @@ namespace SyllafolioInstaller
             using (var dialog = new Form())
             {
                 dialog.Text = "Syllafolio Setup";
-                dialog.Font = new Font("Segoe UI", 10);
-                dialog.AutoScaleMode = AutoScaleMode.Dpi;
+                var page = new SetupPage(dialog);
                 dialog.StartPosition = FormStartPosition.CenterScreen;
-                dialog.ClientSize = new Size(560, 240);
-                dialog.MinimumSize = new Size(480, 220);
                 var details = new TextBox
                 {
                     Text = message,
                     ReadOnly = true,
                     Multiline = true,
-                    ScrollBars = ScrollBars.Vertical,
-                    Location = new Point(20, 20),
-                    Size = new Size(520, 155),
-                    Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
+                    ScrollBars = ScrollBars.Vertical
                 };
-                var ok = new Button
-                {
-                    Text = "OK",
-                    DialogResult = DialogResult.OK,
-                    Location = new Point(445, 190),
-                    Size = new Size(95, 32),
-                    Anchor = AnchorStyles.Bottom | AnchorStyles.Right
-                };
-                dialog.Controls.Add(details);
-                dialog.Controls.Add(ok);
+                page.Fill(details);
+                var ok = SetupPage.Button("OK");
+                ok.DialogResult = DialogResult.OK;
+                page.Finish(560, 240, ok);
                 dialog.AcceptButton = ok;
                 dialog.CancelButton = ok;
                 dialog.ShowDialog();
@@ -1171,40 +1402,18 @@ namespace SyllafolioInstaller
             using (var dialog = new Form())
             {
                 dialog.Text = "Choose installation location";
-                dialog.Font = new Font("Segoe UI", 10);
-                dialog.AutoScaleMode = AutoScaleMode.Dpi;
+                var page = new SetupPage(dialog);
                 dialog.StartPosition = FormStartPosition.CenterParent;
-                dialog.ClientSize = new Size(620, 210);
-                dialog.MinimumSize = new Size(520, 240);
-                var help = new Label
-                {
-                    Text = "Enter the full path of an empty local folder or an authenticated Syllafolio container. A new folder will be created if needed.",
-                    Location = new Point(20, 20),
-                    Size = new Size(580, 55),
-                    Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
-                };
+                page.Text("Enter the full path of an empty local folder or an existing Syllafolio installation. Setup can create a new folder.", 12);
                 var path = new TextBox
                 {
                     Text = current,
-                    Location = new Point(20, 90),
-                    Size = new Size(580, 28),
-                    Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
+                    Dock = DockStyle.Top
                 };
-                var choose = new Button
-                {
-                    Text = "Use this folder",
-                    Location = new Point(360, 155),
-                    Size = new Size(130, 32),
-                    Anchor = AnchorStyles.Bottom | AnchorStyles.Right
-                };
-                var cancel = new Button
-                {
-                    Text = "Cancel",
-                    DialogResult = DialogResult.Cancel,
-                    Location = new Point(505, 155),
-                    Size = new Size(95, 32),
-                    Anchor = AnchorStyles.Bottom | AnchorStyles.Right
-                };
+                page.Row(path, 0);
+                var choose = SetupPage.Button("Use this folder");
+                var cancel = SetupPage.Button("Cancel");
+                cancel.DialogResult = DialogResult.Cancel;
                 choose.Click += delegate
                 {
                     if (string.IsNullOrWhiteSpace(path.Text) || !Path.IsPathRooted(path.Text))
@@ -1216,10 +1425,7 @@ namespace SyllafolioInstaller
                     dialog.DialogResult = DialogResult.OK;
                     dialog.Close();
                 };
-                dialog.Controls.Add(help);
-                dialog.Controls.Add(path);
-                dialog.Controls.Add(choose);
-                dialog.Controls.Add(cancel);
+                page.Finish(600, 190, choose, cancel);
                 dialog.AcceptButton = choose;
                 dialog.CancelButton = cancel;
                 return dialog.ShowDialog(owner) == DialogResult.OK ? path.Text : null;
@@ -1234,103 +1440,72 @@ namespace SyllafolioInstaller
         Button action, cancel, browse;
         Label status;
         ProgressBar progress;
-        CheckBox launch;
+        CheckBox launch, desktopShortcut;
         bool running;
         internal int ExitCode = 24;
         internal Wizard(Options o)
         {
             options = o;
             Text = o.Uninstall ? "Uninstall Syllafolio" : "Syllafolio Setup";
-            Font = new Font("Segoe UI", 10);
-            AutoScaleMode = AutoScaleMode.Dpi;
-            ClientSize = new Size(640, 390);
-            MinimumSize = new Size(590, 420);
+            var page = new SetupPage(this);
             StartPosition = FormStartPosition.CenterScreen;
-            var title = new Label
-            {
-                Text = o.Uninstall ? "Uninstall Syllafolio" : "Install Syllafolio " + Build.Version,
-                AutoSize = true,
-                Font = new Font("Segoe UI", 15, FontStyle.Bold),
-                Location = new Point(25, 22)
-            };
-            Controls.Add(title);
-            var info = new Label
-            {
-                Text = o.Uninstall ? "Close this installation first. Uninstall preserves projects, logs and changed files in their original locations." : "Offline installation for your Windows account. No administrator access is required. Starts with an empty workspace; no samples are included. Existing projects and other installations are preserved.",
-                AutoSize = false,
-                Location = new Point(25, 67),
-                Size = new Size(585, 58),
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
-            };
-            Controls.Add(info);
-            Controls.Add(new Label { Text = o.Uninstall ? "Registered application folder" : "Installation location", AutoSize = true, Location = new Point(25, 137) });
+            page.Text(o.Uninstall ? "Uninstall Syllafolio" : "Install Syllafolio " + Build.Version, 8, true);
+            page.Text(o.Uninstall
+                ? "Close Syllafolio before uninstalling. Your projects, logs and modified files stay in their original locations."
+                : "Setup installs Syllafolio offline for your Windows account without administrator access. The app starts with an empty workspace and no sample audio. Your existing projects and installations are preserved.", 16);
+            page.Text(o.Uninstall ? "Registered application folder" : "Installation location", 4);
+            var pathRow = new TableLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Dock = DockStyle.Top, ColumnCount = 2, RowCount = 1 };
+            pathRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            pathRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             target = new TextBox
             {
                 Text = o.Target ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Syllafolio"),
-                Location = new Point(25, 164),
-                Size = new Size(490, 27),
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+                Anchor = AnchorStyles.Left | AnchorStyles.Right,
+                Margin = Padding.Empty,
                 ReadOnly = o.Uninstall
             };
-            Controls.Add(target);
-            browse = new Button
-            {
-                Text = "Change…",
-                Location = new Point(525, 162),
-                Size = new Size(87, 31),
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
-                Enabled = !o.Uninstall
-            };
+            pathRow.Controls.Add(target, 0, 0);
+            browse = SetupPage.Button("Change…");
+            browse.Margin = new Padding(8, 0, 0, 0);
+            browse.Enabled = !o.Uninstall;
             browse.Click += delegate
             {
                 string chosen = EnglishDialogs.ChooseLocation(this, target.Text);
                 if (chosen != null)
                     target.Text = chosen;
             };
-            Controls.Add(browse);
-            status = new Label
-            {
-                Text = "Program files use a separate app subfolder. Retained data is never overwritten.",
-                Location = new Point(25, 210),
-                Size = new Size(585, 57),
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
-            };
-            Controls.Add(status);
+            pathRow.Controls.Add(browse, 1, 0);
+            page.Row(pathRow, 12);
+            status = page.Text("Setup keeps program files in a separate subfolder.", 10);
             progress = new ProgressBar
             {
-                Location = new Point(25, 280),
-                Size = new Size(585, 18),
-                Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
+                Height = 18,
+                Dock = DockStyle.Top
             };
-            Controls.Add(progress);
+            page.Row(progress, 10);
+            desktopShortcut = new CheckBox
+            {
+                Text = "Create a desktop shortcut",
+                Checked = o.DesktopShortcut,
+                Visible = !o.Uninstall
+            };
+            page.Row(desktopShortcut, 4);
             launch = new CheckBox
             {
                 Text = "Open Syllafolio after installation",
                 Checked = false,
                 Visible = !o.Uninstall,
                 AutoSize = true,
-                Location = new Point(25, 317),
-                Anchor = AnchorStyles.Bottom | AnchorStyles.Left
+                Anchor = AnchorStyles.Left
             };
-            Controls.Add(launch);
-            action = new Button
-            {
-                Text = o.Uninstall ? "Uninstall" : "Install",
-                Location = new Point(410, 339),
-                Size = new Size(95, 32),
-                Anchor = AnchorStyles.Bottom | AnchorStyles.Right
-            };
-            cancel = new Button
-            {
-                Text = "Cancel",
-                Location = new Point(515, 339),
-                Size = new Size(95, 32),
-                Anchor = AnchorStyles.Bottom | AnchorStyles.Right
-            };
-            Controls.Add(action);
-            Controls.Add(cancel);
+            page.Row(launch, 0);
+            action = SetupPage.Button(o.Uninstall ? "Uninstall" : "Install");
+            cancel = SetupPage.Button("Cancel");
+            page.Finish(640, o.Uninstall ? 340 : 370, action, cancel);
             AcceptButton = action;
             CancelButton = cancel;
+            ActiveControl = action;
             action.Click += delegate
             {
                 Start();
@@ -1366,11 +1541,13 @@ namespace SyllafolioInstaller
         void Start()
         {
             options.Target = target.Text;
+            options.DesktopShortcut = desktopShortcut.Checked;
             running = true;
             action.Enabled = false;
             target.Enabled = false;
             browse.Enabled = false;
             launch.Enabled = false;
+            desktopShortcut.Enabled = false;
             Engine.Cancelled = false;
             var worker = new BackgroundWorker
             {
@@ -1431,6 +1608,10 @@ namespace SyllafolioInstaller
                     code = 0;
                     r = (Dictionary<string, object>)e.Result;
                     status.Text = options.Uninstall ? "Uninstalled. Retained data remains in its original location." : "Installed. Open Syllafolio from the Start Menu.";
+                    if (!options.Uninstall && r["desktop_shortcut_warning"] != null)
+                        status.Text = "Installed. " + r["desktop_shortcut_warning"];
+                    else if (!options.Uninstall && r["desktop_shortcut_path"] != null)
+                        status.Text = "Installed. Desktop shortcut: " + Path.GetFileNameWithoutExtension((string)r["desktop_shortcut_path"]) + ".";
                     if (options.Uninstall)
                         Engine.ScheduleCleanup(options, r);
                 }

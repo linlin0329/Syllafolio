@@ -10,7 +10,7 @@ Open the **v0.1.0-lite1** pre-release in this repository's **Releases** section.
 Get-FileHash -Algorithm SHA256 .\Syllafolio-Setup-0.1.0-lite1-x64.exe
 ```
 
-Double-click the installer, choose **Install**, and open **Syllafolio** from the Start menu. The installation is for the current Windows account. You can also download the portable ZIP, extract the whole folder and double-click `Start.cmd`.
+Double-click the installer and choose **Install**. Open **Syllafolio** from the desktop shortcut or the Start menu. If you prefer to keep the desktop clear, uncheck **Create a desktop shortcut** before installing. The installation is for the current Windows account. You can also download the portable ZIP, extract the whole folder and double-click `Start.cmd`.
 
 ## Review a project
 
