@@ -209,6 +209,7 @@ class MainWindow(QMainWindow):
         self._reported_cancellations = set()
         self._after_operation = None
         self._stage_a_dialog = None
+        self._grouping_comparison_dialog = None
         self._interval_import_dialog = None
         self._interval_import_ticket = None
         self._audition_preview = None
@@ -382,6 +383,9 @@ class MainWindow(QMainWindow):
         side.addWidget(self.groups_heading)
         self.group_list = ReviewTree()
         grouping = self.group_list.candidate_menu
+        self.compare_groupings_action = self._menu_action(
+            grouping, "Compare groupings…", "compareGroupings",
+            lambda: self._activate_workspace(self.show_grouping_comparison))
         self.open_candidate_workspace_action = self._menu_action(
             grouping, "Open candidate workspace…", "openCandidateWorkspace",
             lambda: self._activate_workspace(self._show_organization_tab))
@@ -1154,6 +1158,8 @@ class MainWindow(QMainWindow):
             self._worker = None
             self._busy = False
             self._active_operation = None
+            if self._grouping_comparison_dialog is not None:
+                self._grouping_comparison_dialog.worker_settled()
             self.progress.hide()
             self.cancel_button.hide()
             self._set_enabled()
@@ -1188,7 +1194,8 @@ class MainWindow(QMainWindow):
         for action in self._dialog_menu_actions:
             action.setEnabled(opened and available)
         for widget in (self.group_list, self.slot_list, self.current_family, self.create_family_button,
-                       self.open_candidate_workspace_action, self.apply_recommendation, self.keep_clusters,
+                       self.compare_groupings_action, self.open_candidate_workspace_action,
+                       self.apply_recommendation, self.keep_clusters,
                        self.export_button):
             widget.setEnabled(opened and available)
         self.group_list.family_actions_enabled = bool(opened and available and not (self.state or {}).get("deadline_locked"))
@@ -1422,6 +1429,31 @@ class MainWindow(QMainWindow):
         dialog = self._show_stage_a_workspace()
         dialog.tabs.setCurrentWidget(dialog.organization_scroll)
         return dialog
+
+    def show_grouping_comparison(self):
+        if not self.project or self._busy or self._close_coordinator.state != "open":
+            raise ValueError("Open a project and wait for the current operation to finish.")
+        from .annotation_desktop_grouping_comparison import GroupingComparisonDialog
+        self._cancel_tree_navigation()
+        self._stop_review_audio()
+        dialog = self._grouping_comparison_dialog
+        if dialog is not None and (dialog.project is not self.project or
+                                   dialog.generation != self._close_coordinator.generation):
+            self._retire_grouping_comparison()
+            dialog = None
+        if dialog is None:
+            dialog = self._grouping_comparison_dialog = GroupingComparisonDialog(self)
+        if not dialog.isVisible():
+            dialog.start()
+        dialog.raise_()
+        return dialog
+
+    def _retire_grouping_comparison(self):
+        dialog = self._grouping_comparison_dialog
+        if dialog is not None:
+            dialog.close()
+            dialog.deleteLater()
+            self._grouping_comparison_dialog = None
 
     def preview_organization(self, mode="auto", height=None):
         if self._busy:
@@ -1886,6 +1918,8 @@ class MainWindow(QMainWindow):
             self._review_media_dialog.stop(announce=announce)
         if self._interval_import_dialog is not None:
             self._interval_import_dialog.stop(announce=announce)
+        if self._grouping_comparison_dialog is not None:
+            self._grouping_comparison_dialog.audition.stop()
 
     def _fine_submitted(self, item_id):
         if not self.project:
@@ -2065,6 +2099,7 @@ class MainWindow(QMainWindow):
                 raise ValueError("Wait for all previous project workers to settle before installation.")
             self._save_drafts()
             self._retire_review_views("Project replaced.")
+            self._retire_grouping_comparison()
             self._retire_workflow_views("Project replaced.")
             self.project.close()
         if self._cancel_requests is not None:
@@ -3924,6 +3959,7 @@ class MainWindow(QMainWindow):
             if self._stage_a_dialog is not None:
                 self._stage_a_dialog.controller.invalidate("Project closed or switched.")
                 self._stage_a_dialog.close()
+            self._retire_grouping_comparison()
             self._discard_audition_preview()
             if getattr(self, "_display_dialog", None) is not None:
                 self._display_dialog.close()

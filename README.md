@@ -24,6 +24,8 @@ Double-click the installer and choose **Install**. Open **Syllafolio** from the 
 4. Select a human family and edit any exceptions. **Save and next** saves the current item and advances. **Save page** submits all eligible pending items on that page.
 5. Choose **Project → Export saved records…** for JSON, or **Workspace → Catalogue delivery** for a catalogue with a manifest and an offline report.
 
+To compare ways to group the imported syllables, right-click **Candidate Groups** and choose **Compare groupings…**. The finer, default and coarser options show the number of groups, the size of the largest group and the share of syllables left in the global pool. Select a group to listen to a sample. Applying an option updates the project's review groups.
+
 See the [user guide](tools/distribution/USER_GUIDE.md) for type definitions, checkpoints, source declarations and internal assessment.
 
 Both input routes accept mono WAV, FLAC, MP3, Ogg Vorbis and AIFF (`.aif`/`.aiff`) audio at a sample rate of at least 32000 Hz. Segmented files in a batch must share a sample rate. Each imported syllable interval must be no longer than 30 seconds; the whole recording can be longer. Channels are not mixed and audio is not resampled automatically.

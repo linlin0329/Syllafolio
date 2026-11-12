@@ -365,6 +365,11 @@ class AnnotationStateStore:
                 self._rollback()
                 raise
 
+    def read_snapshot(self, run_id: str) -> dict:
+        """Read the last committed revision for an offline preview without sampling the clock."""
+        with self._lock:
+            return self._load(run_id)
+
     def snapshot(self, run_id: str) -> dict:
         """计时采样落盘；普通时钟采样不改变业务revision，截止锁会改变。"""
         with self._lock:

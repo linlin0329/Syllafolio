@@ -6,6 +6,9 @@ Ward只剪切已冻结的94D原型树。局部聚类复用既有双视图固定�
 from __future__ import annotations
 
 import copy
+from functools import lru_cache
+import hashlib
+from io import BytesIO
 import math
 import time
 from pathlib import Path
@@ -24,6 +27,7 @@ from .annotation_acoustics import (
 VERSION = "annotation-batch-acoustics-v1"
 DISPLAY_DEFAULTS = {"dynamic_range_db": 45, "window_samples": 512, "hop_samples": 96}
 NORMALIZATIONS = {"per_item", "whole_page"}
+GROUPING_MIN_SIZES = {"fine": 5, "microclusters": 10, "coarse": 20}
 
 
 def validate_batch_display(settings=None):
@@ -47,10 +51,51 @@ def _coverage(groups, expected):
              "BATCH_COVERAGE", "The candidate organization does not cover all targets completely and without overlap.")
 
 
+@lru_cache(maxsize=4)
+def _partition_labels(frozen_embedding, item_count, parameters):
+    """Use the same verified embedding on preview and apply; cache no project or review state."""
+    import hdbscan
+    embedding = np.load(BytesIO(frozen_embedding), allow_pickle=False)
+    _require(embedding.shape == (item_count, 10) and np.isfinite(embedding).all(),
+             "GROUPING_EMBEDDING", "The saved global embedding does not match the complete syllable list.")
+    return tuple(map(int, hdbscan.HDBSCAN(**dict(parameters)).fit_predict(embedding)))
+
+
+def _alternative_partition(root, provenance, ids, mode, source_hashes):
+    _require(provenance["fit_status"] == "fixed_umap_hdbscan", "GROUPING_UNAVAILABLE",
+             "This project has no fitted global embedding. Only the original grouping is available.")
+    _require(provenance["fit_item_ids"] == ids, "GROUPING_EMBEDDING",
+             "The saved embedding has a different syllable order.")
+    relative = "global/embedding_10d.npy"
+    path = root / relative
+    _require(path.is_file() and not path.is_symlink(), "GROUPING_EMBEDDING",
+             "The saved global embedding is missing.")
+    raw = path.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    _require(digest == provenance["files"].get(relative), "GLOBAL_CANDIDATES_CHANGED",
+             "The saved global embedding has changed.")
+    parameters = dict(provenance["parameters"]["hdbscan"], min_cluster_size=GROUPING_MIN_SIZES[mode])
+    labels = _partition_labels(raw, len(ids), tuple(sorted(parameters.items())))
+    grouped, noise = {}, []
+    for item, label in zip(ids, labels, strict=True):
+        if label < 0:
+            noise.append(item)
+        else:
+            grouped.setdefault(label, []).append(item)
+    groups = []
+    for index, members in enumerate(sorted(sorted(items) for items in grouped.values()), 1):
+        groups.append({"group_id": "group-" + _hash([mode, members])[:16], "label": f"c_{index:04d}",
+                       "item_ids": members, "source_cluster_ids": [], "kind": "microcluster"})
+    receipt = {"granularity": mode, "hdbscan_parameters": parameters, "embedding_sha256": digest,
+               "partition_sha256": _hash([labels, ids]), "embedding_refitted": False}
+    source_hashes.update(receipt)
+    return groups, sorted(noise), receipt
+
+
 def ward_preview(dataset_dir, global_candidates, mode="microclusters", height=None, *, protocol_version="0.5"):
-    """返回可重现的派生工作组；不重新拟合缩放、UMAP、HDBSCAN或Ward。"""
+    """Preview the frozen groups or Ward tree, or fit an explicit density preset on the saved embedding."""
     _require(protocol_version in {"0.4", "0.5"}, "BATCH_PROTOCOL_VERSION", "Unsupported batch protocol version.")
-    _require(mode in {"auto", "microclusters", "skip", "ward"}, "ORGANIZATION_MODE", "Unknown candidate organization mode.")
+    _require(mode in {"auto", "microclusters", "skip", "ward", "fine", "coarse"}, "ORGANIZATION_MODE", "Unknown candidate organization mode.")
     mode = "microclusters" if mode == "skip" else mode
     requested_mode = mode
     directory = Path(dataset_dir).resolve()
@@ -104,6 +149,9 @@ def ward_preview(dataset_dir, global_candidates, mode="microclusters", height=No
                      "WARD_TREE", "The Ward tree is invalid or its heights are not monotonic.")
     elif manifest.get("global_candidates") is not None:
         raise AcousticError("GLOBAL_CANDIDATES_UNAVAILABLE", "The registered global result is unavailable; it cannot be replaced silently.")
+    alternative = mode in {"fine", "coarse"}
+    if alternative:
+        _require(available, "GROUPING_UNAVAILABLE", "This project has no saved global embedding.")
     heights = sorted({0.0, *(float(v) for v in tree[:, 2])})
     ward = {"available": len(clusters) >= 2, "heights": heights,
             "min_height": 0.0, "max_height": heights[-1],
@@ -111,14 +159,21 @@ def ward_preview(dataset_dir, global_candidates, mode="microclusters", height=No
             "prototype": "coordinate_median_scaled94", "prototype_weight": "equal"}
     from .annotation_ward_recommendation import recommend_ward
     lookup = {row["candidate_cluster_id"]: row for row in clusters}
-    recommendation = recommend_ward(tree, [len(lookup[cid]["item_ids"]) for cid in prototype_ids])
-    recommendation["source_fingerprint"] = _hash(hashes)
-    recommendation["recommendation_id"] = "ward-rec-" + _hash(recommendation)[:24]
+    recommendation = {}
+    if not alternative:
+        recommendation = recommend_ward(tree, [len(lookup[cid]["item_ids"]) for cid in prototype_ids])
+        recommendation["source_fingerprint"] = _hash(hashes)
+        recommendation["recommendation_id"] = "ward-rec-" + _hash(recommendation)[:24]
     if mode == "auto":
         _require(height is None, "WARD_HEIGHT", "Automatic recommendation does not accept a hidden manual height.")
         mode, height = recommendation["recommended_mode"], recommendation["height"]
     groups = []
-    if mode == "ward":
+    extra = {}
+    if alternative:
+        _require(height is None, "WARD_HEIGHT", "A clustering preset does not accept a Ward merge height.")
+        groups, remaining, extra = _alternative_partition(root, files["provenance"], ids, mode, hashes)
+        ward = {"available": False, "heights": [], "min_height": 0.0, "max_height": 0.0}
+    elif mode == "ward":
         _require(ward["available"], "WARD_UNAVAILABLE", "Ward aggregation requires at least two valid microclusters.")
         _require(type(height) in {int, float} and math.isfinite(height) and
                  0 <= height <= ward["max_height"], "WARD_HEIGHT", "Explicitly choose a merge height within this batch tree.")
@@ -139,6 +194,7 @@ def ward_preview(dataset_dir, global_candidates, mode="microclusters", height=No
             groups.append({"group_id": "group-" + _hash([cid])[:16], "label": cid,
                            "item_ids": sorted(row["item_ids"]), "source_cluster_ids": [cid],
                            "kind": "microcluster"})
+    microcluster_count = len(groups) if alternative else len(clusters)
     if remaining and protocol_version == "0.4":
         groups.append({"group_id": "machine-unclustered", "label": "Unclustered items",
                        "item_ids": remaining, "source_cluster_ids": [], "kind": "unclustered"})
@@ -149,9 +205,9 @@ def ward_preview(dataset_dir, global_candidates, mode="microclusters", height=No
             "recommendation_used": requested_mode == "auto",
             "algorithmic_unclustered_ids": remaining if protocol_version == "0.5" else [], "mode": mode, "height": float(height) if height is not None else None,
             "groups": groups, "ward": ward, "source_fingerprint": _hash(hashes),
-            "input_item_count": len(ids), "microcluster_count": len(clusters),
-            "unclustered_count": len(remaining), "new_fit": False,
-            "is_human_classification": False}
+            "input_item_count": len(ids), "microcluster_count": microcluster_count,
+            "unclustered_count": len(remaining), "new_fit": alternative,
+            "is_human_classification": False, **extra}
 
 
 def _fonts():

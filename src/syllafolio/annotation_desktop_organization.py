@@ -67,8 +67,8 @@ class OrganizationController:
 
     def set_parameters(self, mode="auto", height=None):
         try:
-            _require(isinstance(mode, str) and mode in {"auto", "microclusters", "ward"},
-                     "ORGANIZATION_MODE", "Select auto, original microclusters or manual Ward.")
+            _require(isinstance(mode, str) and mode in {"auto", "microclusters", "ward", "fine", "coarse"},
+                     "ORGANIZATION_MODE", "Select an available candidate grouping.")
             if mode == "ward":
                 _require(type(height) in {int, float} and math.isfinite(height) and height >= 0,
                          "WARD_HEIGHT", "Manual Ward requires a finite nonnegative merge height.")
@@ -91,9 +91,10 @@ class OrganizationController:
 
     @classmethod
     def _binding(cls, project, state, generation, parameters):
+        from .annotation_batch_review import blank
         return {**cls._identity(project), "revision": state["revision"], "generation": generation,
-                "input_fingerprint": state.get("input_fingerprint"),
-                "protocol_version": state.get("batch_review", {}).get("protocol_version"),
+                "input_fingerprint": project.dataset.input_fingerprint,
+                "protocol_version": state.get("batch_review", blank()).get("protocol_version"),
                 **parameters}
 
     def preview(self, project, *, generation, idempotency_key):
@@ -109,15 +110,16 @@ class OrganizationController:
                 payload["height"] = parameters["height"]
             response = project.execute("batch_preview", payload, expected_revision=binding["revision"],
                                        idempotency_key=idempotency_key)
-        value = {"preview": copy.deepcopy(response["preview"]), "binding": binding,
-                 "summary": organization_summary(response["preview"]), "preview_request": payload,
-                 "preview_request_key": idempotency_key, "applied": False}
         with self._lock:
             _require(ticket == self._ticket and parameters == self._parameters,
                      "ORGANIZATION_PREVIEW_CHANGED", "Parameters changed while the preview was being prepared.")
-            self._cached = value
-            self._invalid_reason = None
+            self._store_preview(response["preview"], binding, payload, idempotency_key)
             return self.snapshot()
+
+    def _store_preview(self, preview, binding, payload, request_key=None):
+        self._cached = {"preview": preview, "binding": binding, "summary": organization_summary(preview),
+                        "preview_request": payload, "preview_request_key": request_key, "applied": False}
+        self._invalid_reason = None
 
     def acknowledge(self, *, acknowledged, impact_fingerprint):
         with self._lock:
@@ -151,7 +153,8 @@ class OrganizationController:
             result = copy.deepcopy(self._cached) if self._cached is not None else {"preview": None, "binding": None, "summary": None}
             result.update(parameters=copy.deepcopy(self._parameters), confirmation=copy.deepcopy(self._confirmation),
                           invalid_reason=self._invalid_reason, can_apply=self._cached is not None
-                          and not self._cached.get("applied") and (not self._cached["preview"].get("impact", {}).get("requires_confirmation")
+                          and not self._cached.get("applied") and not self._cached.get("already_applied")
+                          and (not self._cached["preview"].get("impact", {}).get("requires_confirmation")
                                                                   or self._confirmation is not None))
             return result
 
@@ -173,6 +176,8 @@ class OrganizationController:
                         expected_revision=prior["revision"], idempotency_key=idempotency_key)
                 _require(self._cached is not None and not self._cached.get("applied"), "ORGANIZATION_PREVIEW_REQUIRED",
                          self._invalid_reason or "Preview the current organization before applying it.")
+                _require(not self._cached.get("already_applied"), "ORGANIZATION_ALREADY_APPLIED",
+                         "This grouping already matches the current review.")
                 cached = copy.deepcopy(self._cached)
                 state = project.snapshot()
                 binding = self._binding(project, state, generation, self._parameters)
@@ -198,3 +203,49 @@ class OrganizationController:
                 self._cached["applied"] = True
                 self._confirmation = None
                 return result
+
+
+def compare_groupings(project, *, generation=0, cancelled=None, controllers_by_mode=None):
+    """Compare frozen input with three density settings, without changing the active review."""
+    from .annotation_acoustics import AcousticError, _cancel
+    from .annotation_batch_acoustics import GROUPING_MIN_SIZES
+    from .annotation_batch_review import blank, current_organization, organization_preview, same_organization_partition
+
+    service = project.service
+    with service._lock:
+        service.command_guard("batch_preview")
+        state = service.store.read_snapshot(service.run_id)
+        candidates = service.global_candidates_data
+    current = current_organization(state.get("batch_review", blank()))
+    comparison, controllers = [], {}
+    for mode, size in GROUPING_MIN_SIZES.items():
+        _cancel(cancelled)
+        row = {"mode": mode, "granularity": "default" if mode == "microclusters" else mode,
+               "min_cluster_size": size, "min_samples": 5, "revision": state["revision"],
+               "available": False, "already_applied": False, "reason": ""}
+        try:
+            preview = organization_preview(service.dataset_dir, candidates, state, mode)
+        except AcousticError as exc:
+            if exc.code != "GROUPING_UNAVAILABLE":
+                raise
+            row.update(reason=str(exc).partition(": ")[-1], candidate_group_count=None,
+                       input_item_count=len(project.dataset.item_ids), largest_group_size=None,
+                       unclustered_count=None, unclustered_fraction=None, source_fingerprint=None)
+        else:
+            controller = OrganizationController()
+            controller.set_parameters(mode)
+            binding = controller._binding(project, state, generation, controller._parameters)
+            controller._store_preview(preview, binding, {"mode": mode})
+            row["already_applied"] = same_organization_partition(current, preview)
+            controller._cached["already_applied"] = row["already_applied"]
+            controllers[mode] = controller
+            summary = controller._cached["summary"]
+            row.update(available=True, source_fingerprint=preview["source_fingerprint"],
+                       unclustered_fraction=summary["unclustered_count"] / summary["input_item_count"])
+            for key in ("input_item_count", "candidate_group_count", "largest_group_size", "unclustered_count"):
+                row[key] = summary[key]
+        comparison.append(row)
+    _cancel(cancelled)
+    if controllers_by_mode is not None:
+        controllers_by_mode.update(controllers)
+    return comparison

@@ -115,11 +115,37 @@ def organization_change_impact(state, preview):
 
 def organization_system_summary(preview):
     requested = preview.get("requested_mode", preview["mode"])
-    source = 'Automatic recommendation' if requested == "auto" else 'Manual Ward cut' if requested == "ward" else 'Original microclusters'
+    source = {"auto": "Automatic recommendation", "ward": "Manual Ward cut",
+              "fine": "Fine HDBSCAN grouping", "coarse": "Coarse HDBSCAN grouping"}.get(requested, "Original microclusters")
     resolved = f"Ward merge height {preview['height']:.6g}" if preview["mode"] == "ward" else 'No Ward merge'
     cluster_groups = [g for g in preview["groups"] if g.get("kind") != "unclustered"]
     return (f"Grouping: {source}. {resolved}. {preview['microcluster_count']} microclusters → {len(cluster_groups)} candidate groups. "
             f"{preview['unclustered_count']} unclustered syllables retained for review.")
+
+
+def organization_preview(dataset_dir, candidates, state, mode, height=None):
+    from .annotation_batch_acoustics import ward_preview
+    preview = ward_preview(dataset_dir, candidates, mode=mode, height=height,
+                           protocol_version=state.get("batch_review", blank()).get("protocol_version", "0.4"))
+    preview["impact"] = organization_change_impact(state, preview)
+    preview["preview_fingerprint"] = canonical_hash(preview)
+    return preview
+
+
+def same_organization_partition(current, preview):
+    """Compare auditory groups and initial pool membership independently of their IDs or names."""
+    if not current:
+        return False
+    def members(organization):
+        pool = set(organization.get("algorithmic_unclustered_ids", []))
+        groups = set()
+        for row in organization["groups"]:
+            if row.get("kind") == "unclustered" or row["group_id"] == "machine-unclustered":
+                pool.update(row["item_ids"])
+            else:
+                groups.add(frozenset(row["item_ids"]))
+        return groups, pool
+    return members(current) == members(preview)
 
 
 def direct_exception_option(batch, previous, binding):
@@ -1382,7 +1408,6 @@ class BatchReviewService:
         require(set(payload) <= set(keys), "REQUEST_FIELDS", 'The request includes fields this action does not support.')
 
     def execute(self, action, payload, *, expected_revision, idempotency_key):
-        from .annotation_batch_acoustics import ward_preview
         s = self.service
         require(action in BATCH_ACTIONS and isinstance(payload, dict), "BATCH_ACTION", 'Unknown batch review action.')
         require(isinstance(idempotency_key, str) and 0 < len(idempotency_key) <= 160, "IDEMPOTENCY_REQUIRED", 'The request ID is missing.')
@@ -1410,15 +1435,17 @@ class BatchReviewService:
             start_job = None
             if action in {"batch_preview", "batch_apply"}:
                 self._fields(payload, {"mode", "height", "reason", "note", "preview_fingerprint", "confirmation"} if action == "batch_apply" else {"mode", "height"})
-                preview = ward_preview(s.dataset_dir, s.global_candidates_data,
-                                       mode=payload.get("mode", "auto"), height=payload.get("height"),
-                                       protocol_version=batch.get("protocol_version", "0.4"))
-                preview["impact"] = organization_change_impact(state, preview)
-                preview["preview_fingerprint"] = canonical_hash(preview)
+                preview = organization_preview(s.dataset_dir, s.global_candidates_data, state,
+                                               payload.get("mode", "auto"), payload.get("height"))
                 if action == "batch_preview":
                     return {"preview": preview, "ward": preview.get("ward", {})}
                 require(not any(r["status"] in ACTIVE for r in batch["reviews"].values()),
                         "BATCH_BUSY", 'Wait for the grouping job to finish or cancel it first.')
+                if preview["requested_mode"] in {"fine", "coarse"}:
+                    require("preview_fingerprint" in payload, "ORGANIZATION_PREVIEW_REQUIRED",
+                            "Preview the selected clustering preset before applying it.")
+                    require(not same_organization_partition(current_organization(batch), preview),
+                            "ORGANIZATION_ALREADY_APPLIED", "This grouping already matches the current review.")
                 require(not ("reason" in payload and "note" in payload), "ORGANIZATION_NOTE", 'Specify the note only once.')
                 note = payload.get("note", payload.get("reason", ""))
                 require(isinstance(note, str) and len(note) <= 4000, "ORGANIZATION_NOTE", 'The note may be empty and must be no longer than 4,000 characters.')
