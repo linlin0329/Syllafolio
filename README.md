@@ -2,6 +2,10 @@
 
 Syllafolio is a Windows desktop application for listening to syllables, comparing spectrograms, annotating human-defined families and exporting a catalogue. Its interface, installer, system messages and new catalogue reports use English. Project names, family names, filenames and operator notes retain their original language.
 
+[![Syllafolio showing waveforms and spectrograms for ten Eurasian tree sparrow syllables, with the fourth syllable selected.](docs/images/syllable-review.png)](docs/images/syllable-review.png)
+
+These ten syllables come from recordings of Eurasian tree sparrows (*Passer montanus*). The reviewer can play the whole row to compare calls, or loop the selected syllable while deciding which family it belongs to.
+
 ## Install on Windows x64
 
 Open the **v0.1.0** release in this repository's **Releases** section. Download **Syllafolio-Setup-0.1.0-x64.exe** and compare its SHA-256 with the entry in **SHA256SUMS.txt**.
