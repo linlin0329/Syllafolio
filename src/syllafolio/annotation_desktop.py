@@ -870,6 +870,11 @@ class MainWindow(QMainWindow):
             "BATCH_FIRST_PASS_PENDING": "Finish the candidate review groups", "POOL_REVIEW_PENDING": "Finish the global pool review"}
         prerequisites = list(dict.fromkeys(prerequisite_names.get(code, "Inspect the outstanding workspace requirements")
             for row in navigation.get("stages", []) for code in row.get("blockers", [])))
+        preprocessing = self.project.metadata.get("preparation_summary", {}).get("audio_preprocessing")
+        filter_details = ()
+        if isinstance(preprocessing, dict) and all(key in preprocessing for key in ("low_hz", "high_hz", "order")):
+            filter_details = (f"Import band-pass filter: {preprocessing['low_hz']:g}–{preprocessing['high_hz']:g} Hz",
+                f"Filter order: {preprocessing['order']}", f"Filter method: {preprocessing.get('method', 'Not recorded')}")
         return "\n".join((f"Project: {self.project.project_dir.name}", f"Location: {self.project.project_dir}",
             f"Project ID: {self.project.metadata.get('project_id')}", f"Run ID: {self.project.service.run_id}",
             f"Purpose: {purpose}", f"Operator: {contract.get('operator_id')}",
@@ -878,7 +883,7 @@ class MainWindow(QMainWindow):
             f"Evidence source: {contract.get('evidence_source', contract.get('source', 'Not recorded'))}",
             f"Record kind: {contract.get('record_kind', 'Not recorded')}", "Research: disabled", "Model calls: disabled",
             "Workflow status: " + workflow_names.get(navigation.get("current_stage", "A"), "Review"),
-            "Workflow prerequisites: " + ("; ".join(prerequisites) if prerequisites else "None outstanding")))
+            "Workflow prerequisites: " + ("; ".join(prerequisites) if prerequisites else "None outstanding"), *filter_details))
 
     def _show_project_details(self):
         if not self.project:
@@ -1390,9 +1395,11 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             self._status("Input inspected read-only; import was not requested.")
             return
+        bandpass = dialog.bandpass_settings()
         contract = ProjectContractDialog(self)
         if contract.exec() == QDialog.DialogCode.Accepted:
             options = contract.options()
+            options["bandpass"] = bandpass
             options["expected_source_fingerprint"] = view["summary"]["source_fingerprint"]
             if view.get("inspection_fingerprint"):
                 options["expected_inspection_fingerprint"] = view["inspection_fingerprint"]

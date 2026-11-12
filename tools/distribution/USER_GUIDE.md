@@ -18,7 +18,7 @@ Choose **Project → New project from recording and annotations…**, then selec
 - **Audacity labels:** tab-separated regions with start and end times in seconds; label text is optional. Point labels are skipped rather than converted into syllables.
 - **Raven selections:** a selection table for the chosen recording only. The start/end time columns are sufficient; label text is optional. Recording associations and selection IDs are preserved when provided. The same selection shown in multiple views with matching boundaries represents one interval.
 
-For Audacity and Raven, the start and end times define the segment. Audition keeps the recording's full frequency band; table frequency bounds do not crop the audio.
+For Audacity and Raven, the start and end times define the segment. Table frequency bounds do not crop the audio. With the optional band-pass filter off, audition keeps the recording's full frequency band.
 
 An empty label remains a valid region in Audacity and Raven tables; the TextGrid blank-interval option does not filter these regions.
 
@@ -27,6 +27,18 @@ Run the preview and check that the table belongs to the chosen recording. Inspec
 Confirm the preview, choose a new project directory, and complete the existing purpose/operator form. The application freezes the selected input and runs the fixed feature pipeline. Keep the original recording and table as your source archive. External labels remain source references: they do not create human families, assign syllables or complete reviews.
 
 With a small input such as the optional three-chirp example, the syllables may all enter **Global pool**. Right-click **Candidate Groups → Open candidate workspace…**, preview and explicitly apply the organization, then select **Global pool → Prepare group** to open the audition pages. An empty candidate-group list does not mean that the import failed.
+
+## Optional import band-pass filtering
+
+**Band-pass filter** is off by default in both new-project routes. If enabled, its starting settings are a **500 Hz low cutoff**, **15000 Hz high cutoff** and Butterworth design order **4**. Both cutoffs are adjustable; order can be **1–8**. The low cutoff must be above zero and below the high cutoff, and the high cutoff must be below half the audio sample rate. Invalid settings must be corrected before import.
+
+For **New project from syllables…**, choose the option in the input-review dialog before selecting **Import this input**. The complete declared parent source is filtered before its syllable intervals are cut. Where no larger parent source was provided, the complete syllable file is the source.
+
+For **New project from recording and annotations…**, choose the settings before running the preview. Changing the filter invalidates the old preview; run it again and check the selected audio before creating the project. Filtering applies to the complete decoded recording, not separately to each selected interval. Original recording files and annotation tables remain unchanged.
+
+When the option is on, the project freezes filtered PCM, and audition, review spectrograms and acoustic features use that PCM. Its recorded settings are shown in **Help → Project details…**. Existing projects are not silently reprocessed; create a new project from the originals to use a different import filter.
+
+This is audio preprocessing, separate from **View → Display settings…** and from frequency bounds written in an external annotation table. Display changes do not alter PCM; table frequency bounds do not apply an audio filter. Band-pass filtering does not assign families or confirm human decisions.
 
 ## Listen, inspect and save
 

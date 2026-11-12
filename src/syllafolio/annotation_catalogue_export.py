@@ -390,6 +390,7 @@ class CatalogueExportService:
                 "input_versions": copy.deepcopy(self.owner.dataset.input_versions), "input_artifacts": copy.deepcopy(self.owner.dataset._provenance),
                 "catalogue_revision": state["catalogue_revision"], "source_version": preview["source_registry"]["version"],
                 "protocol_version": context["protocol_version"], "export_code_identity": self.code_identity},
+            **({"audio_preprocessing": copy.deepcopy(self.owner.audio_preprocessing)} if self.owner.audio_preprocessing else {}),
             "spectrogram_display": context["display"], "audit_path": "audit.json",
             "audit_scope": "task-wide audit; primary catalogue counts and completion concern declared scope only",
             "scientific_validity_certified": False, "labels_changed": False,
@@ -518,7 +519,7 @@ class CatalogueExportService:
                 "source_frame_start": interval["source_frame_start"], "source_frame_stop": interval["source_frame_stop"],
                 "sample_rate_hz": rate, "parent_audio_sha256": self.owner.dataset._parents[interval["source_clip_id"]]["sha256"],
                 "pcm_sha256": hashlib.sha256(np.asarray(samples, dtype="<f4").tobytes()).hexdigest(),
-                "audio_processing": "none; float32 PCM exact", "display": render_metadata})
+                "audio_processing": document.get("audio_preprocessing", "none; float32 PCM exact"), "display": render_metadata})
             with self.owner._lock:
                 self.runtime_progress[ident] = {"stage": "media", "completed_media": index + 1, "total_media": len(roles)}
         document["media"] = media

@@ -227,6 +227,8 @@ def project_stage_a_view(project, snapshot, timing=None):
     return {"schema_version": SCHEMA, "status": "ready", "origin": origin, "summary": summary,
             "items": rows, "sources": sources,
             "recipe": {"feature_scheme": feature_scheme(), "parameters": copy.deepcopy(provenance.get("parameters")),
+                       **({"audio_preprocessing": copy.deepcopy(manifest["audio_preprocessing"])}
+                          if manifest.get("audio_preprocessing") else {}),
                        "feature_parameters": copy.deepcopy(provenance.get("feature_parameters")),
                        "preset_id": provenance.get("preset_id"), "fit_status": provenance.get("fit_status"),
                        "source_code_sha256": copy.deepcopy(provenance.get("source_code_sha256")),

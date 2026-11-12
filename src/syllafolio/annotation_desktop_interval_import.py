@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from .annotation_desktop_widgets import PcmPlayer
+from .annotation_desktop_stage_a_ui import BandpassControls
 from .annotation_english import system_error
 
 
@@ -103,6 +104,8 @@ class IntervalImportDialog(QDialog):
             self.kind.addItem(name, value)
         form.addRow("Annotation format", self.kind)
         layout.addLayout(form)
+        self.bandpass = BandpassControls(self)
+        layout.addWidget(self.bandpass)
         self.preview_button = QPushButton("Preview recording and intervals")
         self.preview_button.setObjectName("intervalPreview")
         layout.addWidget(self.preview_button)
@@ -189,6 +192,7 @@ class IntervalImportDialog(QDialog):
         self.annotation_browse.clicked.connect(self._choose_annotations)
         for edit in (self.recording_input, self.annotation_input): edit.textChanged.connect(self._input_changed)
         self.kind.currentIndexChanged.connect(self._input_changed)
+        self.bandpass.changed.connect(self._bandpass_changed)
         self.preview_button.clicked.connect(self.load_preview)
         self.tier.currentIndexChanged.connect(self._tier_changed)
         self.include_empty.toggled.connect(self._tier_changed)
@@ -246,6 +250,10 @@ class IntervalImportDialog(QDialog):
         self.summary.setText("Preview again after changing either file or the annotation format.")
         self._update_enabled()
 
+    def _bandpass_changed(self):
+        self._input_changed()
+        self._message("Band-pass settings changed. Preview again.")
+
     def _clear_pcm(self):
         self.stop()
         self._pcm = self._pcm_key = None
@@ -284,6 +292,13 @@ class IntervalImportDialog(QDialog):
         if not recording or not annotation or kind is None:
             self._message("Choose one recording, its annotation file and an annotation format.", True)
             return
+        try:
+            # The file may have been replaced since a prior preview. Validate
+            # Nyquist against the newly opened recording in the worker.
+            bandpass = self.bandpass.settings()
+        except (ValueError, RuntimeError) as error:
+            self._message(system_error(error), True)
+            return
         self._epoch += 1
         self._release_preview(); self._clear_pcm()
         self.regions_table.setRowCount(0); self._regions = []
@@ -294,7 +309,7 @@ class IntervalImportDialog(QDialog):
             for index, tier in enumerate(preview.tiers): self.tier.addItem(tier.name, index)
             self.tier.setCurrentIndex(0); self.tier.blockSignals(False)
             self._tier_changed()
-        self._run("Preview recording and annotations", lambda _progress, cancelled: open_preview(recording, annotation, kind, cancelled=cancelled), inspected)
+        self._run("Preview recording and annotations", lambda _progress, cancelled: open_preview(recording, annotation, kind, cancelled=cancelled, bandpass=bandpass), inspected)
 
     def _tier_changed(self, *_args):
         self._row_epoch += 1
@@ -414,7 +429,7 @@ class IntervalImportDialog(QDialog):
         if self._retired: return
         available = self._current() and not self.owner._busy and not self._waiting
         for widget in (self.recording_input, self.annotation_input, self.recording_browse, self.annotation_browse,
-                       self.kind, self.preview_button, self.regions_table): widget.setEnabled(available)
+                       self.kind, self.preview_button, self.regions_table, self.bandpass): widget.setEnabled(available)
         self.tier.setEnabled(available and self._preview is not None)
         is_textgrid = (self._preview.kind if self._preview else self.kind.currentData()) == "textgrid"
         self.tier_controls.setVisible(is_textgrid and self._preview is not None)

@@ -236,7 +236,8 @@ class DisplayController:
                 "target_frames": (interval["target_start_frame_in_context"], interval["target_stop_frame_in_context"]),
                 "image_path": image, "context_requested": context, "context_available": available,
                 "context_kind": row.get("context_kind", "not_recorded"), "settings": settings,
-                "reference_only": False, "audio_processing": "none", "display_normalization": "independent_clip_peak",
+                "reference_only": False, "audio_processing": project.metadata.get("preparation_summary", {}).get("audio_preprocessing", "none"),
+                "display_normalization": "independent_clip_peak",
                 "image_sha256": hashlib.sha256(image.read_bytes()).hexdigest(), "display_cache_receipt": receipt,
                 "image_origin": "project_owned_display_cache_not_registered_download_asset"}
 

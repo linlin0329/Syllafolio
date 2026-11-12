@@ -423,7 +423,9 @@ def prepare_review(dataset, item_ids, output_dir, route, gap_seconds, normalizat
                                "covered_count": sum(len(p["item_ids"]) for p in pages),
                                "unique_count": len(ids), "complete": True},
                   "artifacts": artifacts, "is_human_classification": False,
-                  "audio_processing": "original_float32_PCM_with_internal_zero_silence_only",
+                  "audio_processing": ("bandpass_filtered_project_PCM_with_internal_zero_silence"
+                                       if "original_audio" in dataset._items[ids[0]]
+                                       else "original_float32_PCM_with_internal_zero_silence_only"),
                   "provenance": {"source_code_sha256": _sha(__file__),
                                  "acoustic_code_sha256": _sha(Path(__file__).with_name("annotation_acoustics.py"))}}
         _cancel(check_cancelled)

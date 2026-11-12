@@ -334,6 +334,10 @@ def render_html(document, asset_urls=None):
     status = _status(mode)
     body = f'<header><p class="eyebrow">ACOUSTIC ANNOTATION · CATALOGUE</p><h1>Syllable type catalogue and internal assessment</h1><span class="badge">{_e(status)}</span><p class="meta">Export ID {_e(document.get("export_id"))}<br>Generated {_e(document.get("created_at"))}<br>Snapshot fingerprint {_e(document.get("snapshot_fingerprint"))}</p><p>This report preserves types, members and judgments submitted by the operator. Complete delivery means engineering records are complete for the declared scope; it does not establish unique biological type truth, annotation accuracy or workflow efficiency.</p><nav><a href="#scope">Scope and status</a><a href="#catalogue">Type catalogue</a><a href="#registers">Members and dispositions</a><a href="#assessment">Internal assessment</a><a href="#provenance">Versions and files</a></nav><p class="print-note">Open this file offline. To create a PDF, use the browser Print → Save as PDF command. Audio plays from packaged WAV files; PDF does not embed audio.</p></header>'
     body += '<section id="scope"><h2>1 · Declared scope and delivery status</h2>'
+    if document.get("audio_preprocessing"):
+        params = document["audio_preprocessing"]
+        body += (f'<p>Import band-pass filter: {_e(params["low_hz"])}–{_e(params["high_hz"])} Hz, '
+                 f'Butterworth order {_e(params["order"])} (forward and backward). Example audio uses this filter.</p>')
     if not scope.get("declared"):
         body += '<p class="notice">No delivery scope is declared. This draft lists current task records and is not a complete delivery of the whole catalogue or any declared subset.</p>'
     else:
@@ -373,7 +377,8 @@ def render_html(document, asset_urls=None):
             if media.get("spectrogram_path"):
                 body += f'<img src="{_href(media["spectrogram_path"], asset_urls)}" alt="{_e(media.get("item_id"))} spectrogram" loading="lazy">'
             if media.get("wav_path"):
-                body += f'<audio controls preload="none" src="{_href(media["wav_path"], asset_urls)}"></audio><p>' + _link(media["wav_path"], 'Open original-PCM syllable WAV', asset_urls) + '</p>'
+                audio_label = 'Open filtered syllable WAV' if document.get("audio_preprocessing") else 'Open original-PCM syllable WAV'
+                body += f'<audio controls preload="none" src="{_href(media["wav_path"], asset_urls)}"></audio><p>' + _link(media["wav_path"], audio_label, asset_urls) + '</p>'
             body += '<figcaption>Parent clip ' + _e(media.get("source_clip_id")) + ' · Declared original recording ' + _e(media.get("raw_recording_id")) + '</figcaption><details><summary>Audio, spectrogram and source parameters</summary><pre>' + _e({k: media.get(k) for k in ("audio_processing", "source_frame_start", "source_frame_stop", "sample_rate_hz", "display", "wav_sha256", "spectrogram_sha256")}) + '</pre></details></figure>'
         body += '</div>'
         if not media_rows:

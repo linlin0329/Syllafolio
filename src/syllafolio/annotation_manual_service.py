@@ -43,10 +43,12 @@ class ManualAnnotationService(AnnotationService):
         store = store or ManualAnnotationStateStore(Path(work_dir) / "state.sqlite3")
         try:
             super().__init__(dataset_dir, work_dir, store=store, **kwargs)
+            self.audio_preprocessing = json.loads((self.dataset_dir / "manifest.json").read_bytes()).get("audio_preprocessing")
             self.batch = BatchReviewService(self)
             self.batch.recover()
             self.material_origin = classify_material(
-                self.dataset._parents[row["source_clip_id"]]["sha256"] for row in self.dataset._items.values())
+                row.get("original_audio", {}).get("parent_sha256") or self.dataset._parents[row["source_clip_id"]]["sha256"]
+                for row in self.dataset._items.values())
             self.assessment = LabelAssessmentService(self)
             self.assessment.recover()
             self.catalogue_export = CatalogueExportService(self, kwargs.get("preset_path"))
@@ -81,7 +83,7 @@ class ManualAnnotationService(AnnotationService):
                      batch_review=self.batch.snapshot(state),
                      material_origin=copy.deepcopy(self.material_origin),
                      spectrogram_display={"renderer": VERSION, "defaults": dict(DEFAULTS),
-                                          "audio_processing": "none"},
+                                          "audio_processing": copy.deepcopy(self.audio_preprocessing) or "none"},
                      input_fingerprint=self.dataset.input_fingerprint,
                      type_cards=state.get("type_cards", {}), catalogue_scope=state.get("catalogue_scope"),
                      current_completion_id=state.get("current_completion_id"),

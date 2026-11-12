@@ -247,7 +247,7 @@ def _verify_inspected_import(root, input_dir, plan, identity, mapping):
 def create_project(input_dir, project_dir, progress=None, cancelled=None, *,
                    purpose="engineering", operator_id=None, budget_seconds=DEFAULT_BUDGET,
                    expected_source_fingerprint=None, expected_inspection_fingerprint=None,
-                   _annotation_evidence=None):
+                   _annotation_evidence=None, bandpass=None):
     """冻结真实已分割输入并运行现行流程a；仅新项目，失败留诊断清单。
 
     此调用包含特征提取和聚类，桌面界面应在工作线程调用。progress接收原流程a
@@ -264,6 +264,8 @@ def create_project(input_dir, project_dir, progress=None, cancelled=None, *,
         timing.progress({"stage": "starting", "message": "Inspecting the complete input before creating a project.",
                          "completed": 0, "total": 0}, progress)
         plan = stage_a.inspect_source(input_dir, cancelled=cancelled)
+        from .acoustics.bandpass import validate_bandpass
+        bandpass = validate_bandpass(bandpass, plan["sample_rate_hz"])
         _require(expected_source_fingerprint is None or plan["source_fingerprint"] == expected_source_fingerprint,
                  "INPUT_CHANGED", 'The input changed after the summary inspection. Check the full scope again.')
         inspection, original_segments, original_mapping = _inspection_snapshot(input_dir, plan)
@@ -285,7 +287,8 @@ def create_project(input_dir, project_dir, progress=None, cancelled=None, *,
         current_inspection, _raw, _mapping = _inspection_snapshot(input_dir, plan)
         _require(current_inspection == inspection, "INPUT_CHANGED", 'The reviewed input identity changed before the calculation started.')
         result = stage_a.prepare_stage_a(input_dir, root / RUN_RELATIVE,
-                                       progress=lambda event: timing.progress(event, progress), cancelled=cancelled)
+                                       progress=lambda event: timing.progress(event, progress), cancelled=cancelled,
+                                       bandpass=bandpass)
         _require(result["source_fingerprint"] == plan["source_fingerprint"],
                  "INPUT_CHANGED", 'The frozen scope differs from the first inspection. The new project was not published.')
         _verify_inspected_import(root, input_dir, plan, inspection, original_mapping)

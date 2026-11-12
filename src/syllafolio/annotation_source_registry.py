@@ -65,13 +65,24 @@ def declaration_conflicts(groups, mappings):
 
 
 def build_index(dataset):
-    parents = {key: pcm_hash(value["path"]) for key, value in dataset._parents.items()}
+    parents = {}
     rows = []
     for ident in dataset.item_ids:
         item = dataset._items[ident]
-        rows.append({"item_id": ident, "source_clip_id": item["source_clip_id"],
-                     "parent_pcm_identity": parents[item["source_clip_id"]],
-                     "segment_pcm_identity": pcm_hash(item["_path"], item["source_frame_start"], item["source_frame_stop"])})
+        key = item["source_clip_id"]
+        original = item.get("original_audio")
+        if original is not None:
+            # Filtering can make identical source intervals sound different
+            # in different parent contexts. Group by the verified source PCM.
+            parent_identity = original["parent_pcm_identity"]
+            segment_identity = original["segment_pcm_identity"]
+        else:
+            if key not in parents:
+                parents[key] = pcm_hash(dataset._parents[key]["path"])
+            parent_identity = parents[key]
+            segment_identity = pcm_hash(item["_path"], item["source_frame_start"], item["source_frame_stop"])
+        rows.append({"item_id": ident, "source_clip_id": key, "parent_pcm_identity": parent_identity,
+                     "segment_pcm_identity": segment_identity})
     return {"items": rows, "components": components(rows), "fingerprint": canonical_hash(rows)}
 
 

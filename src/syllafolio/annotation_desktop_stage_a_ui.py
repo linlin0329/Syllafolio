@@ -6,11 +6,11 @@ import copy
 import json
 import uuid
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
     QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
-    QScrollArea, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
+    QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from .annotation_desktop_organization import OrganizationController
@@ -64,6 +64,47 @@ def _summary_text(view):
         "A parent clip or syllable file is not automatically an independent recording.")
 
 
+class BandpassControls(QWidget):
+    """Shared import-time audio processing choices; display settings are separate."""
+    changed = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.enable_checkbox = QCheckBox("Band-pass filter")
+        self.enable_checkbox.setObjectName("bandpassEnabled")
+        self.enable_checkbox.setToolTip("Filter the imported PCM before feature extraction. Original input files remain unchanged.")
+        self.low_hz = QDoubleSpinBox(); self.low_hz.setObjectName("bandpassLowHz")
+        self.high_hz = QDoubleSpinBox(); self.high_hz.setObjectName("bandpassHighHz")
+        for widget, prefix, value in ((self.low_hz, "Low ", 500), (self.high_hz, "High ", 15000)):
+            widget.setDecimals(1); widget.setRange(.1, 1_000_000)
+            widget.setSingleStep(100); widget.setPrefix(prefix); widget.setSuffix(" Hz"); widget.setValue(value)
+        self.order = QSpinBox(); self.order.setObjectName("bandpassOrder")
+        self.order.setRange(1, 8); self.order.setValue(4); self.order.setPrefix("Order ")
+        row.addWidget(self.enable_checkbox)
+        for widget in (self.low_hz, self.high_hz, self.order):
+            row.addWidget(widget); widget.setEnabled(False)
+            widget.valueChanged.connect(lambda _value: self.changed.emit())
+        row.addStretch(1)
+        self.enable_checkbox.toggled.connect(self._toggle)
+
+    def _toggle(self, enabled):
+        for widget in (self.low_hz, self.high_hz, self.order): widget.setEnabled(enabled)
+        self.changed.emit()
+
+    def settings(self, rate=None):
+        if not self.enable_checkbox.isChecked():
+            return None
+        value = {"low_hz": self.low_hz.value(), "high_hz": self.high_hz.value(), "order": self.order.value()}
+        if value["low_hz"] >= value["high_hz"]:
+            raise ValueError("The low cutoff must be below the high cutoff.")
+        if rate is not None:
+            from .acoustics.bandpass import validate_bandpass
+            return validate_bandpass(value, rate)
+        return value
+
+
 class InputInspectionDialog(QDialog):
     """审阅已有首错检查结果；接受只是导入意图，不创建项目或人工记录。"""
     def __init__(self, view, parent=None):
@@ -94,11 +135,28 @@ class InputInspectionDialog(QDialog):
                       "No human labels are loaded. The first invalid input stops inspection.")
         note.setWordWrap(True)
         layout.addWidget(note)
+        self.bandpass = BandpassControls(self)
+        layout.addWidget(self.bandpass)
+        self.problem = QLabel(); self.problem.setWordWrap(True)
+        self.problem.setTextFormat(Qt.TextFormat.PlainText)
+        self.problem.setStyleSheet("color:#a34838;")
+        layout.addWidget(self.problem)
         self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Import this input")
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
+
+    def bandpass_settings(self):
+        return self.bandpass.settings(self.view.get("summary", {}).get("sample_rate_hz"))
+
+    def accept(self):
+        try:
+            self.bandpass_settings()
+        except (ValueError, RuntimeError) as error:
+            self.problem.setText(system_error(error))
+            return
+        super().accept()
 
 
 class StageAWorkspaceDialog(QDialog):

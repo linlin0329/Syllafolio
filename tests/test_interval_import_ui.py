@@ -43,10 +43,13 @@ class IntervalImportUi(unittest.TestCase):
     def setUp(self):
         self.tmp = TemporaryDirectory(prefix="ri-ui-")
         self.root = Path(self.tmp.name)
-        QSettings.setDefaultFormat(QSettings.Format.IniFormat)
-        QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(self.root / "settings"))
         self.old_hook = sys.excepthook
-        self.window = MainWindow(diagnostics_dir=self.root / "diagnostics")
+        settings_path = (self.root / "settings" / "geometry.ini").absolute()
+        private_settings = QSettings(str(settings_path), QSettings.Format.IniFormat)
+        with patch("syllafolio.annotation_desktop.QSettings", return_value=private_settings):
+            self.window = MainWindow(diagnostics_dir=self.root / "diagnostics")
+        self.assertEqual(self.window.settings.format(), QSettings.Format.IniFormat)
+        self.assertEqual(Path(self.window.settings.fileName()).resolve(), settings_path.resolve())
         self.window.show()
         self.recording = self.root / "recording.wav"
         self.rate = 48000
@@ -108,6 +111,7 @@ item []:
             self.window.request_close("cancel")
             wait_for(lambda: self.window._closing_approved)
         self.window.close()
+        self.window.settings.sync()
         sys.excepthook = self.old_hook
         self.tmp.cleanup()
 

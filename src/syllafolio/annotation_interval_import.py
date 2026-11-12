@@ -15,6 +15,7 @@ import soundfile as sf
 from scipy.io import wavfile
 
 from . import annotation_stage_a as stage
+from .acoustics.bandpass import filter_audio_file, validate_bandpass
 from .annotation_interval_formats import detect_format, parse_annotations
 
 
@@ -77,6 +78,12 @@ class RecordingPreview:
     tiers: list
     rate: int
     frames: int
+    _audition_pcm: Path
+    _bandpass: dict | None
+
+    @property
+    def bandpass(self):
+        return dict(self._bandpass) if self._bandpass is not None else None
 
     @property
     def recording_name(self):
@@ -113,7 +120,7 @@ class RecordingPreview:
         return regions
 
     def samples(self, region):
-        with sf.SoundFile(self._pcm) as stream:
+        with sf.SoundFile(self._audition_pcm) as stream:
             return _read_region(stream, region)
 
 
@@ -129,7 +136,7 @@ def _read_region(stream, region):
     return samples
 
 
-def open_preview(recording, annotation, kind="auto", *, cancelled=None):
+def open_preview(recording, annotation, kind="auto", *, cancelled=None, bandpass=None):
     recording, annotation = Path(recording).resolve(strict=True), Path(annotation).resolve(strict=True)
     if recording.suffix.lower() not in stage.INPUT_FORMATS or not recording.is_file():
         raise ValueError(f"Choose a recording in one of these formats: {stage.FORMAT_NAMES}.")
@@ -139,6 +146,9 @@ def open_preview(recording, annotation, kind="auto", *, cancelled=None):
     if initial.st_size > stage.LIMITS["max_total_audio_bytes"]:
         raise ValueError("The recording exceeds the 2 GiB project input limit.")
     stage._cancel(cancelled)
+    if bandpass is not None:
+        # Reject out-of-band settings before copying or decoding a long recording.
+        bandpass = validate_bandpass(bandpass, stage._audio_header(recording).samplerate)
     data = annotation.read_bytes()
     if kind == "auto":
         kind = detect_format(data, annotation.name)
@@ -157,9 +167,14 @@ def open_preview(recording, annotation, kind="auto", *, cancelled=None):
         if (final.st_size, final.st_mtime_ns) != (initial.st_size, initial.st_mtime_ns):
             raise ValueError("The recording changed while opening the preview. Try again after it has finished writing.")
         pcm, info = stage._audio_view(snapshot, digest, scratch, segment=False, cancelled=cancelled)
+        settings = validate_bandpass(bandpass, info.samplerate)
+        audition = pcm
+        if settings:
+            audition = scratch / "bandpass-preview.wav"
+            filter_audio_file(pcm, audition, settings, cancelled=cancelled)
         stage._cancel(cancelled)
         return RecordingPreview(temp, recording, annotation, snapshot, pcm, data, digest, kind,
-                                tiers, info.samplerate, info.frames)
+                                tiers, info.samplerate, info.frames, audition, settings)
     except BaseException:
         _discard_scratch(temp)
         raise
@@ -183,6 +198,9 @@ def create_interval_project(preview, tier_index, include_empty, project_dir, pro
                             **contract_options):
     from .annotation_desktop_project import create_project
 
+    requested = contract_options.pop("bandpass", preview.bandpass)
+    if validate_bandpass(requested, preview.rate) != preview.bandpass:
+        raise ValueError("The band-pass settings changed. Preview the recording again.")
     if Path(project_dir).expanduser().resolve().is_relative_to(Path(preview._temporary.name).resolve()):
         raise ValueError("Choose a permanent project folder outside the temporary recording preview.")
     regions = preview.regions(tier_index, include_empty)
@@ -230,6 +248,8 @@ def create_interval_project(preview, tier_index, include_empty, project_dir, pro
             "annotation_name": preview.annotation_name,
             "annotation_file": "boundaries.TextGrid" if preview.kind == "textgrid" else "boundaries.txt",
             "annotation_sha256": hashlib.sha256(preview._annotation_bytes).hexdigest(),
+            **({"audio_preprocessing": stage.bandpass_metadata(preview.bandpass, preview.rate)} if preview.bandpass else {}),
             "tier": preview.tiers[tier_index].name, "tier_index": tier_index,
             "include_empty_intervals": bool(include_empty), "intervals": mapping})
-        return create_project(folder, project_dir, progress, cancelled, _annotation_evidence=evidence, **contract_options)
+        return create_project(folder, project_dir, progress, cancelled, _annotation_evidence=evidence,
+                              bandpass=preview.bandpass, **contract_options)

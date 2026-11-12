@@ -19,6 +19,7 @@ import numpy as np
 import soundfile as sf
 
 from . import ei_b_assistance as assistance
+from .acoustics import bandpass as bp
 
 SOURCE_SCHEMA = "annotation-segments-v1"
 PROVENANCE_SCHEMA = "annotation-stage-a-provenance-v1"
@@ -369,12 +370,21 @@ def _progress(callback, stage, message, completed=0, total=0):
         callback({"stage": stage, "message": message, "completed": completed, "total": total})
 
 
-def _versions(fingerprint):
+def bandpass_metadata(settings, rate):
+    params = bp.validate_bandpass(settings, rate)
+    if params is None:
+        return None
+    return {"method": "butterworth_sos_forward_backward_v1", "scope": "complete_source_before_slicing",
+            **params}
+
+
+def _versions(fingerprint, processing=None):
     suffix = fingerprint[:20]
-    return {"material_version": "stage-a-material-" + suffix,
+    audio_suffix = _hash({"source": fingerprint, "processing": processing})[:20] if processing else suffix
+    return {"material_version": "stage-a-material-" + audio_suffix,
             "boundary_version": "stage-a-frames-" + suffix,
-            "feature_version": "stage-a-existing105-logmel64x32-v1",
-            "global_representation_version": "stage-a-global-" + suffix}
+            "feature_version": "stage-a-existing105-logmel64x32-v1" + ("-bandpass-" + _hash(processing)[:20] if processing else ""),
+            "global_representation_version": "stage-a-global-" + audio_suffix}
 
 
 def _candidate_payload(scaled, labels, probabilities, ids, versions, fit_status):
@@ -394,14 +404,19 @@ def _candidate_payload(scaled, labels, probabilities, ids, versions, fit_status)
     return payload, matrices, mapping
 
 
-def prepare_stage_a(source_dir, output_dir, progress=None, cancelled=None, plan_only=False):
+def prepare_stage_a(source_dir, output_dir, progress=None, cancelled=None, plan_only=False, *, bandpass=None):
     """复用现有提取／聚类函数拟合全部输入，生成可接人工工作台的新版本。"""
     with TemporaryDirectory(prefix="syl-audio-") as scratch:
-        return _prepare_stage_a(source_dir, output_dir, progress, cancelled, plan_only, scratch)
+        return _prepare_stage_a(source_dir, output_dir, progress, cancelled, plan_only, scratch, bandpass)
 
 
-def _prepare_stage_a(source_dir, output_dir, progress, cancelled, plan_only, scratch):
+def _prepare_stage_a(source_dir, output_dir, progress, cancelled, plan_only, scratch, bandpass):
     plan = _inspect(source_dir, scratch, cancelled)[3]
+    bandpass = bp.validate_bandpass(bandpass, plan["sample_rate_hz"])
+    processing = bandpass_metadata(bandpass, plan["sample_rate_hz"])
+    if processing:
+        plan["audio_preprocessing"] = processing
+        plan["input_requirements"]["automatic_bandpass_filtering"] = True
     output = Path(output_dir).absolute()
     _require(not output.exists() and not output.resolve().is_relative_to(Path(source_dir).resolve()),
              "OUTPUT_EXISTS", "Candidate output must be a new run version outside the source directory.")
@@ -418,7 +433,7 @@ def _prepare_stage_a(source_dir, output_dir, progress, cancelled, plan_only, scr
     dataset, global_dir = output / "dataset", output / "global"
     dataset.mkdir(); (dataset / "parents").mkdir(); global_dir.mkdir()
     ids = [r["item_id"] for r in rows]
-    versions = _versions(plan["source_fingerprint"])
+    versions = _versions(plan["source_fingerprint"], processing)
     _progress(progress, "features", "Initializing and extracting 105D and log-mel features", 0, len(rows))
     from .acoustics import audio_processor, config as feature_config, log_mel
 
@@ -431,8 +446,25 @@ def _prepare_stage_a(source_dir, output_dir, progress, cancelled, plan_only, scr
     features, patches, items, parent_map = [], [], [], {}
     for index, row in enumerate(rows):
         _cancel(cancelled)
-        waveform, rate, pcm_sha = _pcm(row["pcm_path"])
-        _require(pcm_sha == row["decoded_pcm_sha256"], "INPUT_CHANGED", "The frozen syllable PCM has changed.")
+        if row["parent"] not in parent_map:
+            media = row["parent_pcm_path"]
+            name = "parents/" + row["source_clip_id"] + (".wav" if processing else media.suffix.lower())
+            if processing:
+                bp.filter_audio_file(media, dataset / name, bandpass, cancelled=cancelled)
+                media_sha = _sha(dataset / name)
+            else:
+                media_sha = row["parent_sha256"] if media == row["parent"] else _sha(media)
+                shutil.copyfile(media, dataset / name)
+                _require(_sha(dataset / name) == media_sha, "INPUT_CHANGED", "The copied parent source does not match.")
+            parent_map[row["parent"]] = name, media_sha
+        name, media_sha = parent_map[row["parent"]]
+        if processing:
+            waveform, rate, pcm_sha = _pcm(dataset / name, row["source_frame_start"], row["source_frame_stop"])
+            _require(len(waveform) == row["frames"] and rate == row["sample_rate_hz"],
+                     "INVALID_AUDIO", "Band-pass filtering changed the source timing.")
+        else:
+            waveform, rate, pcm_sha = _pcm(row["pcm_path"])
+            _require(pcm_sha == row["decoded_pcm_sha256"], "INPUT_CHANGED", "The frozen syllable PCM has changed.")
         try:
             vector = processor.extract_features(waveform, sr=rate)
             patch = log_mel.log_mel_patch(waveform, rate).ravel()
@@ -442,14 +474,6 @@ def _prepare_stage_a(source_dir, output_dir, progress, cancelled, plan_only, scr
                  and np.isfinite(vector).all() and np.isfinite(patch).all(),
                  "FEATURE_EXTRACTION_FAILED", f"{row['item_id']}: the feature dimensions or values are invalid.")
         features.append(vector); patches.append(patch)
-        if row["parent"] not in parent_map:
-            media = row["parent_pcm_path"]
-            name = "parents/" + row["source_clip_id"] + media.suffix.lower()
-            media_sha = row["parent_sha256"] if media == row["parent"] else _sha(media)
-            shutil.copyfile(media, dataset / name)
-            _require(_sha(dataset / name) == media_sha, "INPUT_CHANGED", "The copied parent source does not match.")
-            parent_map[row["parent"]] = name, media_sha
-        name, media_sha = parent_map[row["parent"]]
         items.append({"item_id": row["item_id"], "feature_id": row["item_id"],
                       "feature_row_index": index, "source_clip_id": row["source_clip_id"],
                       "wav_path": name,
@@ -457,7 +481,10 @@ def _prepare_stage_a(source_dir, output_dir, progress, cancelled, plan_only, scr
                       "source_frame_stop": row["source_frame_stop"],
                       "sample_rate_hz": rate, "parent_audio_sha256": media_sha,
                       "context_kind": row["context_kind"],
-                      "decoded_pcm_sha256": row["decoded_pcm_sha256"]})
+                      "decoded_pcm_sha256": pcm_sha})
+        if processing:
+            items[-1]["original_audio"] = {key: row[key] for key in (
+                "decoded_pcm_sha256", "parent_sha256", "parent_pcm_identity", "segment_pcm_identity")}
         if row["raw_recording_id"] is not None or row["raw_recording_evidence"]:
             items[-1].update(raw_recording_id=row["raw_recording_id"], raw_recording_evidence=row["raw_recording_evidence"])
         _progress(progress, "features", "Using the shared 105D and log-mel extraction", index + 1, len(rows))
@@ -495,6 +522,9 @@ def _prepare_stage_a(source_dir, output_dir, progress, cancelled, plan_only, scr
                     Path(assistance.__file__), Path(feature_config.__file__),
                     Path(audio_processor.__file__), Path(log_mel.__file__)]
     packages = ["numpy", "scipy", "scikit-learn", "librosa", "soundfile", "umap-learn", "hdbscan"]
+    if processing:
+        manifest["audio_preprocessing"] = processing
+        source_paths.append(Path(bp.__file__))
     if any(row["pcm_path"] != row["path"] or row["parent_pcm_path"] != row["parent"] for row in rows):
         source_paths.append(Path(__file__).with_name("annotation_audio_decode.py"))
         packages.append("PySide6")
@@ -567,10 +597,17 @@ def _validate_stage_a(output_dir, scratch, cancelled=None):
         _require(not Path(name).is_absolute() and ".." not in Path(name).parts
                  and path.resolve().is_relative_to(root) and not path.is_symlink()
                  and _sha(path) == digest, "OUTPUT_HASH", "The candidate artifact SHA does not match.")
-    frozen = _inspect(root / "coordinator/source", scratch, cancelled)[3]
+    _, frozen_rows, _, frozen = _inspect(root / "coordinator/source", scratch, cancelled)
     _require(frozen["source_fingerprint"] == provenance["source_fingerprint"],
              "OUTPUT_IDENTITY", "The frozen original-input identity does not match.")
     ids = [row["item_id"] for row in manifest["items"]]
+    processing = manifest.get("audio_preprocessing")
+    if processing is not None:
+        _require(isinstance(processing, dict), "OUTPUT_VERSION", "Invalid saved audio filter settings.")
+        params = {k: processing.get(k) for k in ("low_hz", "high_hz", "order")}
+        _require(processing == bandpass_metadata(params, frozen["sample_rate_hz"]) and
+                 provenance["input_versions"] == _versions(frozen["source_fingerprint"], processing),
+                 "OUTPUT_VERSION", "The saved band-pass settings do not match the project input versions.")
     _require(ids == manifest["global_fit_ids"] == manifest["feature_item_ids"]
              == provenance["fit_item_ids"] and len(ids) == len(set(ids)) == frozen["item_count"],
              "OUTPUT_IDENTITY", "The global fit members do not cover the complete input.")
@@ -609,7 +646,7 @@ def _validate_stage_a(output_dir, scratch, cancelled=None):
              and set(assigned + remaining) == set(ids), "OUTPUT_COVERAGE", "Candidate groups and unclustered items do not form a complete, disjoint cover.")
     # Each parent is already hashed in this validation pass. A recording with
     # many intervals must not require a full-file hash for each short clip.
-    for row in manifest["items"]:
+    for row, source in zip(manifest["items"], frozen_rows, strict=True):
         _cancel(cancelled)
         path = (manifest_path.parent / row["wav_path"]).resolve()
         _require(path.is_relative_to(root / "dataset")
@@ -618,6 +655,11 @@ def _validate_stage_a(output_dir, scratch, cancelled=None):
         _, rate, pcm_sha = _pcm(path, row["source_frame_start"], row["source_frame_stop"])
         _require(rate == row["sample_rate_hz"] and pcm_sha == row["decoded_pcm_sha256"],
                  "OUTPUT_MEDIA", "The review media PCM does not match the input syllable.")
+        if processing:
+            _require(row.get("original_audio") == {key: source[key] for key in (
+                "decoded_pcm_sha256", "parent_sha256", "parent_pcm_identity", "segment_pcm_identity")} and
+                all(row[key] == source[key] for key in ("item_id", "source_clip_id", "source_frame_start", "source_frame_stop")),
+                "OUTPUT_MEDIA", "The filtered interval does not match its frozen source.")
     return {"status": "ready", "item_count": len(ids), "fit_item_count": len(ids),
             "candidate_clusters": len(payload["clusters"]), "unclustered_items": len(remaining),
             "fit_status": fit_status, "input_versions": provenance["input_versions"],
@@ -625,6 +667,8 @@ def _validate_stage_a(output_dir, scratch, cancelled=None):
             "source_fingerprint": frozen["source_fingerprint"], "preset_id": PRESET_ID,
             "sample_rate_hz": frozen["sample_rate_hz"], "total_duration_s": frozen["total_duration_s"],
             "context_available_count": frozen["context_available_count"],
-            "limits": copy.deepcopy(LIMITS), "input_requirements": frozen["input_requirements"],
+            "limits": copy.deepcopy(LIMITS), "input_requirements": {**frozen["input_requirements"],
+                **({"automatic_bandpass_filtering": True} if processing else {})},
+            **({"audio_preprocessing": processing} if processing else {}),
             "human_decisions_created": 0, "type_memberships_created": 0,
             "validation": "hash_identity_coverage_numeric_replay_no_umap_refit"}

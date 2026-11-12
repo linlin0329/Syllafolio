@@ -24,6 +24,8 @@ See the [user guide](tools/distribution/USER_GUIDE.md) for type definitions, che
 
 Both input routes accept mono WAV, FLAC, MP3, Ogg Vorbis and AIFF (`.aif`/`.aiff`) audio at a sample rate of at least 32000 Hz. Segmented files in a batch must share a sample rate. Each imported syllable interval must be no longer than 30 seconds; the whole recording can be longer. Channels are not mixed and audio is not resampled automatically.
 
+Both new-project routes offer an optional **Band-pass filter**, off by default. Its adjustable defaults are **500–15000 Hz**, Butterworth order **4**. When enabled, the complete source is filtered before intervals are cut; project audition and features use that filtered PCM. Original input files remain unchanged. See the user guide before choosing preprocessing settings.
+
 ## Run the source checkout
 
 Use Windows x64 with CPython 3.12.10. Run these commands from the repository root:
