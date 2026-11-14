@@ -1299,7 +1299,7 @@ class MainWindow(QMainWindow):
         self.item_editor.setMaximumHeight(edit.minimumSize().height() + natural - minimum)
 
     def _import_dialog(self):
-        source = QFileDialog.getExistingDirectory(self, "Choose segmented mono audio input")
+        source = QFileDialog.getExistingDirectory(self, "Choose a folder of segmented syllables")
         if not source:
             return
         base = Path(os.environ.get("SYLLAFOLIO_PROJECTS_DIR", str(Path.home() / "SyllafolioProjects")))

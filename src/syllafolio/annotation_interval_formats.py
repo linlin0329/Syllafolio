@@ -123,7 +123,7 @@ def detect_format(data: bytes, annotation_name: str) -> str:
     _fail("The annotation format was not recognized. Choose a Raven table, text TextGrid or Audacity label file.")
 
 
-def parse_annotations(data: bytes, kind: str, recording_name: str) -> list[AnnotationTier]:
+def parse_annotations(data: bytes, kind: str, recording_name: str, *, recording_channels: int = 1) -> list[AnnotationTier]:
     if kind == "auto":
         kind = detect_format(data, "")
     if kind not in _KINDS:
@@ -132,7 +132,7 @@ def parse_annotations(data: bytes, kind: str, recording_name: str) -> list[Annot
     if kind == "textgrid":
         return _textgrid(text)
     if kind == "raven":
-        return _raven(text, recording_name)
+        return _raven(text, recording_name, recording_channels)
     return _audacity(text)
 
 
@@ -283,7 +283,7 @@ def _same_displayed_time(begin: Decimal, offset: Decimal) -> bool:
             return False
 
 
-def _raven(text, recording_name):
+def _raven(text, recording_name, recording_channels):
     lines = [(index, line) for index, line in enumerate(text.splitlines(), 1) if line.strip()]
     headers = lines[0][1].split("\t")
     normalized = [_header(value) for value in headers]
@@ -332,20 +332,26 @@ def _raven(text, recording_name):
             if begin != offset:
                 precision_matches += 1
         channel = value("channel").strip()
-        if channel and _decimal(channel, f"Raven line {line_number} channel") != 1:
-            _fail("Raven annotations must refer to channel 1 of the selected mono recording.")
+        channel_number = _decimal(channel, f"Raven line {line_number} channel") if channel else None
+        if channel_number is not None and channel_number not in range(1, recording_channels + 1):
+            _fail(f"Raven line {line_number}: channel {channel} is unavailable in the selected recording ({recording_channels} channel(s)).")
         ident = value("selection").strip() if selection_column else f"row-{ordinal}"
         if not ident:
             _fail(f"Raven line {line_number}: Selection must not be empty.")
         label = value(label_column) if label_column else ""
         view = value("view").strip()
+        # Raven can show the same selection on different views or stereo channels.
+        # That selection contributes one time interval to the mixed audition.
+        view_key = (view, channel_number)
         if ident in seen:
             old, views, output_index = seen[ident]
             if old.start != begin or old.end != end or (old.label and label and old.label != label):
                 _fail(f"Raven Selection {ident}: view rows disagree about time or annotation.")
-            if not view or view in views:
-                _fail(f"Raven Selection {ident}: duplicate ID without a distinct view.")
-            views.add(view)
+            if any((not view or view == previous_view) and
+                   (channel_number is None or previous_channel is None or channel_number == previous_channel)
+                   for previous_view, previous_channel in views):
+                _fail(f"Raven Selection {ident}: duplicate ID without a distinct view or channel.")
+            views.add(view_key)
             duplicate_views += 1
             if not old.label and label:
                 old = replace(old, label=label)
@@ -355,7 +361,7 @@ def _raven(text, recording_name):
             continue
         item = Interval(begin, end, label, ident)
         output_index = len(intervals) if begin != end else None
-        seen[ident] = item, {view}, output_index
+        seen[ident] = item, {view_key}, output_index
         if begin == end:
             skipped_points += 1
         else:

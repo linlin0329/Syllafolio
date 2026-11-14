@@ -12,7 +12,7 @@ import soundfile as sf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from syllafolio.annotation_batch_acoustics import prepare_review
-from syllafolio.annotation_desktop_project import open_project
+from syllafolio.annotation_desktop_project import RUN_RELATIVE, open_project
 from syllafolio.annotation_interval_import import open_preview, create_interval_project
 
 
@@ -99,6 +99,42 @@ class RecordingImport(unittest.TestCase):
                     self.assertFalse((self.root / "rejected").exists())
                 finally:
                     changed.write_bytes(original)
+
+    def test_stereo_raven_channel_two_uses_recording_timeline_and_both_channels(self):
+        raven = self.root / "channel-2.txt"
+        raven.write_bytes(b"Selection\tView\tChannel\tBegin Time (s)\tEnd Time (s)\n"
+                          b"1\tSpectrogram 1\t2\t31.1\t31.25\n"
+                          b"1\tSpectrogram 1\t1\t31.1\t31.25\n")
+        with self.assertRaises(ValueError):
+            open_preview(self.recording, raven)
+        right = np.roll(self.samples, self.rate // 10)
+        stereo = np.column_stack((self.samples, right))
+        sf.write(self.recording, stereo, self.rate, subtype="FLOAT")
+        mixed = .5 * self.samples + .5 * right
+        original = self.recording.read_bytes()
+        preview = self.preview(raven)
+        region, = preview.regions(0)
+        self.assertEqual((region.start_frame, region.stop_frame, preview.frames),
+                         (1492800, 1500000, len(stereo)))
+        expected = mixed[region.start_frame:region.stop_frame]
+        np.testing.assert_array_equal(preview.samples(region), expected)
+        project_dir = self.root / "stereo-project"
+        with create_interval_project(preview, 0, False, project_dir):
+            pass
+        preview.close()
+        self.assertEqual(self.recording.read_bytes(), original)
+        self.recording.unlink()
+        with open_project(project_dir) as project:
+            ident, = project.dataset.item_ids
+            np.testing.assert_array_equal(project.read_audio(ident)[0], expected)
+            audio, rate, bounds = project.read_audio(ident, context=True)
+            self.assertEqual(rate, self.rate)
+            np.testing.assert_array_equal(audio, mixed[bounds["source_frame_start"]:bounds["source_frame_stop"]])
+            evidence = json.loads((project_dir / "source_annotations/import.json").read_bytes())
+            self.assertEqual(evidence["recording_sha256"], hashlib.sha256(original).hexdigest())
+            self.assertEqual((evidence["recording_channels"], evidence["channel_mix"]), (2, "mean_left_right"))
+            original_parent, = (project_dir / RUN_RELATIVE / "coordinator/source/parents").iterdir()
+            self.assertEqual(original_parent.read_bytes(), original)
 
     def test_selected_textgrid_tier_and_explicit_empty_intervals(self):
         path = self.root / "multiple.TextGrid"

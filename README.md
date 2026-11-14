@@ -42,7 +42,7 @@ To compare ways to group the imported syllables, right-click **Candidate Groups*
 
 See the [user guide](tools/distribution/USER_GUIDE.md) for type definitions, checkpoints, source declarations and internal assessment.
 
-Both input routes accept mono WAV, FLAC, MP3, Ogg Vorbis and AIFF (`.aif`/`.aiff`) audio at a sample rate of at least 32000 Hz. Segmented files in a batch must share a sample rate. Each imported syllable interval must be no longer than 30 seconds; the whole recording can be longer. Channels are not mixed and audio is not resampled automatically.
+Both input routes accept mono or stereo WAV, FLAC, MP3, Ogg Vorbis and AIFF (`.aif`/`.aiff`) at 32,000 Hz or higher. For stereo files, Syllafolio averages the left and right channels before optional filtering, playback and feature extraction. It keeps the original sample rate and interval boundaries. Mono and stereo files can share a batch if their sample rates match. Each syllable can be up to 30 seconds long.
 
 Both new-project routes offer an optional **Band-pass filter**, off by default. Its adjustable defaults are **500–15000 Hz**, Butterworth order **4**. When enabled, the complete source is filtered before intervals are cut; project audition and features use that filtered PCM. Original input files remain unchanged. See the user guide before choosing preprocessing settings.
 

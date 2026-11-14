@@ -4,9 +4,11 @@ Version **1.0.0** uses the supplied application source and hash-locked dependenc
 
 ## Start and use your own project
 
-Fully extract the package and run **Start.cmd**. In Project, create a new project or open an existing project copy. **New project from syllables…** accepts a folder of segmented mono audio. **New project from recording and annotations…** accepts one recording with an annotation table defining the syllable intervals.
+Fully extract the package and run **Start.cmd**. In Project, create a new project or open an existing project copy. **New project from syllables…** accepts a folder of segmented audio. **New project from recording and annotations…** accepts one recording with an annotation table defining the syllable intervals.
 
-Supported audio formats are WAV, FLAC, MP3, Ogg Vorbis and AIFF (`.aif`/`.aiff`). Audio must be mono at a sample rate of at least 32000 Hz; segmented files in one batch must share the same sample rate. Each imported syllable interval must be no longer than 30 seconds, while a whole recording can be longer. The application does not automatically mix channels or resample, and it does not use external converters to accept other formats. For segmented input, use segments.json to declare parent recordings and frame boundaries explicitly. Unknown origins remain unknown; separate audio files are not automatically independent recordings.
+Both routes accept mono or stereo WAV, FLAC, MP3, Ogg Vorbis and AIFF (`.aif`/`.aiff`) at 32,000 Hz or higher. Stereo input is mixed to mono by averaging the left and right samples at each frame. The preview, optional band-pass filter, spectrogram and acoustic features use that mix at the original sample rate. If the two channels contain separate microphone signals and you want to annotate just one, export that channel as a mono file before import.
+
+Segmented files in one batch must share the same sample rate. Each imported syllable interval can be up to 30 seconds long, while a whole recording can be longer. For segmented input, use segments.json to declare parent recordings and frame boundaries explicitly. Unknown origins remain unknown; separate audio files are not automatically independent recordings.
 
 Import freezes the input and computes the fixed features. It does not assign scientific human types. Use the actual operator for a daily project; retain the engineering designation for engineering work. Store projects separately from original audio. Close normally before backing up the complete project. Do not replace a project's database with another project's database or overwrite an older installation.
 
@@ -16,7 +18,7 @@ Choose **Project → New project from recording and annotations…**, then selec
 
 - **Praat TextGrid:** exported text in long or short format. Select the intended **IntervalTier**. Blank intervals are excluded by default; include them only if you intend to review them as syllables. Point tiers do not define syllable intervals.
 - **Audacity labels:** tab-separated regions with start and end times in seconds; label text is optional. Point labels are skipped rather than converted into syllables.
-- **Raven selections:** a selection table for the chosen recording only. The start/end time columns are sufficient; label text is optional. Recording associations and selection IDs are preserved when provided. The same selection shown in multiple views with matching boundaries represents one interval.
+- **Raven selections:** a selection table for the chosen recording only. Start and end times are sufficient. For a stereo recording, selections may refer to channel 1 or 2. Preview and review use the stereo mix. Rows for the same selection with matching boundaries across views or channels represent one interval.
 
 For Audacity and Raven, the start and end times define the segment. Table frequency bounds do not crop the audio. With the optional band-pass filter off, audition keeps the recording's full frequency band.
 

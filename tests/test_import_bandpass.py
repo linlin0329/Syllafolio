@@ -153,11 +153,24 @@ class BandpassImport(unittest.TestCase):
         source = self.root / "compressed"
         source.mkdir()
         mp3 = source / "clip.mp3"
-        sf.write(mp3, self.raw, self.rate)
+        t = np.arange(self.raw.size) / self.rate
+        right = .24 * np.sin(2*np.pi*4300*t)
+        sf.write(mp3, np.column_stack((self.raw, right)), self.rate)
         original_bytes = mp3.read_bytes()
         decoded = self.root / "decoded.wav"
         decode_to_wave(mp3, decoded)
-        expected = self.reference(sf.read(decoded, dtype="float32")[0])
+        mono, rate = sf.read(decoded, dtype="float32")
+        self.assertEqual((rate, mono.shape), (self.rate, self.raw.shape))
+        # Use a second decoder to check both channel gains. Compare Fourier
+        # magnitudes so codec-dependent rounding or phase is immaterial.
+        reference, _ = sf.read(mp3, dtype="float32", always_2d=True)
+        self.assertEqual(reference.shape, (self.raw.size, 2))
+        window = np.hanning(len(mono))
+        reference_mix = .5 * reference[:, 0] + .5 * reference[:, 1]
+        bands = [3100, 4300]  # One second at 48 kHz, giving one bin per Hz.
+        np.testing.assert_allclose(np.abs(np.fft.rfft(window * mono))[bands],
+                                   np.abs(np.fft.rfft(window * reference_mix))[bands], rtol=.02)
+        expected = self.reference(mono)
         with create_project(source, self.root / "mp3-project", bandpass=self.settings) as project:
             np.testing.assert_allclose(project.read_audio("syllable-0001")[0], expected, rtol=0, atol=1e-7)
         annotations = self.root / "labels.txt"

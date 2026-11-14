@@ -80,6 +80,7 @@ class RecordingPreview:
     frames: int
     _audition_pcm: Path
     _bandpass: dict | None
+    recording_channels: int = 1
 
     @property
     def bandpass(self):
@@ -152,9 +153,6 @@ def open_preview(recording, annotation, kind="auto", *, cancelled=None, bandpass
     data = annotation.read_bytes()
     if kind == "auto":
         kind = detect_format(data, annotation.name)
-    tiers = parse_annotations(data, kind, recording.name)
-    if not tiers:
-        raise ValueError("The annotation file contains no interval tiers.")
     # The dialog and worker share this immutable snapshot. Even if the original
     # is replaced, the plotted and auditioned frames always refer to one signal.
     temp = TemporaryDirectory(prefix="syl-regions-")
@@ -166,7 +164,12 @@ def open_preview(recording, annotation, kind="auto", *, cancelled=None, bandpass
         final = recording.stat()
         if (final.st_size, final.st_mtime_ns) != (initial.st_size, initial.st_mtime_ns):
             raise ValueError("The recording changed while opening the preview. Try again after it has finished writing.")
-        pcm, info = stage._audio_view(snapshot, digest, scratch, segment=False, cancelled=cancelled)
+        source_info = stage._audio_header(snapshot)
+        tiers = parse_annotations(data, kind, recording.name, recording_channels=source_info.channels)
+        if not tiers:
+            raise ValueError("The annotation file contains no interval tiers.")
+        pcm, info = stage._audio_view(snapshot, digest, scratch, segment=False, cancelled=cancelled,
+                                      source_info=source_info)
         settings = validate_bandpass(bandpass, info.samplerate)
         audition = pcm
         if settings:
@@ -174,7 +177,8 @@ def open_preview(recording, annotation, kind="auto", *, cancelled=None, bandpass
             filter_audio_file(pcm, audition, settings, cancelled=cancelled)
         stage._cancel(cancelled)
         return RecordingPreview(temp, recording, annotation, snapshot, pcm, data, digest, kind,
-                                tiers, info.samplerate, info.frames, audition, settings)
+                                tiers, info.samplerate, info.frames, audition, settings,
+                                recording_channels=source_info.channels)
     except BaseException:
         _discard_scratch(temp)
         raise
@@ -245,6 +249,7 @@ def create_interval_project(preview, tier_index, include_empty, project_dir, pro
             "schema": "syllafolio-recording-intervals-v1", "format": preview.kind,
             "recording_name": preview.recording_name, "recording_sha256": preview.recording_sha256,
             "sample_rate_hz": preview.rate, "recording_frames": preview.frames,
+            **({"recording_channels": 2, "channel_mix": "mean_left_right"} if preview.recording_channels == 2 else {}),
             "annotation_name": preview.annotation_name,
             "annotation_file": "boundaries.TextGrid" if preview.kind == "textgrid" else "boundaries.txt",
             "annotation_sha256": hashlib.sha256(preview._annotation_bytes).hexdigest(),

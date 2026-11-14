@@ -1,4 +1,4 @@
-"""Sequential decoding with the packaged Qt FFmpeg backend, without playback.
+"""Frame-preserving stereo conversion and sequential MP3 decoding without playback.
 
 The caller enforces its allowed input formats. Container duration and estimated
 frame counts are deliberately not used. Frame indices belong to the resulting
@@ -19,12 +19,44 @@ _NO_PROGRESS_TIMEOUT_MS = 30_000
 _MAX_WAV_DATA_BYTES = (1 << 32) - 256
 
 
+def _mean_stereo(frames):
+    """Mix a block of interleaved float32 frames to mono at the native sample rate."""
+    import numpy as np
+
+    if not np.isfinite(frames).all():
+        raise ValueError("The stereo audio contains non-finite samples.")
+    # The wider accumulator also preserves finite FLOAT WAV peaks above 1.0.
+    return np.mean(frames, axis=1, dtype=np.float64).astype("<f4")
+
+
+def downmix_to_wave(source, destination, *, cancelled=None):
+    """Stream a seekable stereo source to a new mono FLOAT WAV in caller-owned scratch."""
+    import soundfile as sf
+    from .acoustics.bandpass import _wave_header
+
+    with sf.SoundFile(source) as stream:
+        if stream.channels != 2:
+            raise ValueError("Expected a stereo audio source.")
+        header = _wave_header(stream.samplerate, stream.frames)
+        with destination.open("xb") as output:
+            output.write(header)
+            remaining = stream.frames
+            while remaining:
+                if cancelled and cancelled():
+                    raise ValueError("Audio conversion was cancelled.")
+                block = stream.read(min(65536, remaining), dtype="float32", always_2d=True)
+                if not len(block):
+                    raise ValueError("The stereo audio ended before its declared frame count.")
+                output.write(_mean_stereo(block).tobytes())
+                remaining -= len(block)
+
+
 def decode_to_wave(source: Path, destination: Path, *,
-                   max_seconds: float | None = None, cancelled=None) -> None:
+                   max_seconds: float | None = None, cancelled=None, source_channels=None) -> None:
     """Decode from the beginning to EOF into a new mono FLOAT WAV.
 
-    No resampling, channel mixing, amplitude normalization or audio output is
-    performed. A rate/channel/sample-format change, non-finite samples, empty
+    Mono retains its sample values; stereo uses the arithmetic mean of each
+    left/right frame. A rate/channel/sample-format change, non-finite samples, empty
     audio, a stalled decoder, or a duration beyond ``max_seconds`` is rejected.
     ``None`` does not impose a duration cap; the RIFF size limit still applies.
 
@@ -84,6 +116,7 @@ def decode_to_wave(source: Path, destination: Path, *,
     failure = None
     completed = False
     rate = None
+    channels = None
     sample_format = None
     frame_count = 0
     loop = None
@@ -95,7 +128,7 @@ def decode_to_wave(source: Path, destination: Path, *,
         loop.quit()
 
     def consume():
-        nonlocal writer, rate, sample_format, frame_count
+        nonlocal writer, rate, channels, sample_format, frame_count
         if failure is not None:
             return
         try:
@@ -107,15 +140,19 @@ def decode_to_wave(source: Path, destination: Path, *,
                     continue
                 audio_format = buffer.format()
                 current_rate = audio_format.sampleRate()
-                if audio_format.channelCount() != 1:
-                    raise ValueError("Audio must be mono; channels are not combined automatically.")
+                current_channels = audio_format.channelCount()
+                if current_channels not in (1, 2):
+                    raise ValueError("Audio must have one or two channels.")
+                if source_channels is not None and current_channels != source_channels:
+                    raise ValueError("The decoded channel count differs from the source header.")
                 if current_rate <= 0:
                     raise ValueError("The decoded sample rate is invalid.")
                 if rate is None:
-                    rate, sample_format = current_rate, audio_format.sampleFormat()
+                    rate, channels, sample_format = current_rate, current_channels, audio_format.sampleFormat()
                     writer = sf.SoundFile(temporary, mode="w", samplerate=rate,
                                           channels=1, format="WAV", subtype="FLOAT")
-                elif current_rate != rate or audio_format.sampleFormat() != sample_format:
+                elif (current_rate != rate or current_channels != channels
+                      or audio_format.sampleFormat() != sample_format):
                     raise ValueError("The audio format changes within the decoded stream.")
                 raw = bytes(buffer.constData())[:buffer.byteCount()]
                 if len(raw) != buffer.byteCount():
@@ -132,7 +169,11 @@ def decode_to_wave(source: Path, destination: Path, *,
                     samples = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
                 else:
                     raise ValueError("The decoded PCM sample format is unsupported.")
-                if len(samples) != buffer.frameCount() or not np.isfinite(samples).all():
+                if len(samples) != buffer.frameCount() * channels:
+                    raise ValueError("The decoded sample count does not match the audio frame count.")
+                if channels == 2:
+                    samples = _mean_stereo(samples.reshape(-1, 2))
+                elif not np.isfinite(samples).all():
                     raise ValueError("The decoded audio is invalid or contains non-finite samples.")
                 next_count = frame_count + len(samples)
                 if max_seconds is not None and next_count / rate > max_seconds:
@@ -159,8 +200,7 @@ def decode_to_wave(source: Path, destination: Path, *,
         abort(ValueError("The audio could not be decoded: " + decoder.errorString()))
 
     try:
-        # Do not request a rate or channel count: Qt returns the native stream
-        # format. Conversion to FLOAT below changes only PCM representation.
+        # Request native PCM so the application controls stereo mixing.
         loop = QEventLoop()
         decoder = QAudioDecoder()
         watchdog = QTimer(decoder)

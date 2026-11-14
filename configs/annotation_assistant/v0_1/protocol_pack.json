@@ -8,7 +8,7 @@
     {
       "id": "AAP-001",
       "title": "Input syllables",
-      "text": "Import already segmented mono syllable files.",
+      "text": "Import segmented mono or stereo syllable files. Stereo channels are averaged for listening and analysis.",
       "keywords": [
         "import",
         "WAV",

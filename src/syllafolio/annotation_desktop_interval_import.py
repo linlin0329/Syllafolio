@@ -323,6 +323,8 @@ class IntervalImportDialog(QDialog):
             self._regions = self._preview.regions(index, self.include_empty.isChecked())
             info = getattr(self._preview.tiers[index], "info", {}) or {}
             text = f"{len(self._regions)} importable interval(s)."
+            if self._preview.recording_channels == 2:
+                text += " Left and right channels are averaged for playback and analysis."
             if self._preview.kind == "textgrid" and not self.include_empty.isChecked():
                 skipped = sum(not item.label.strip() for item in self._preview.tiers[index].intervals)
                 if skipped: text += f" Skipped {skipped} empty interval(s)."

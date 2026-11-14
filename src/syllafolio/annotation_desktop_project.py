@@ -430,6 +430,14 @@ def _validate_marker(root):
     requirements = saved_summary.get("input_requirements") if isinstance(saved_summary, dict) else None
     if isinstance(requirements, dict) and "capacity_note" in requirements:
         requirements["capacity_note"] = system_text(requirements["capacity_note"])
+    # Earlier mono-only projects recorded the accepted input channel count as
+    # a scalar. Compare that contract against the verified mono source files.
+    current_requirements = result["input_requirements"]
+    if (isinstance(requirements, dict) and requirements.get("channels") == 1
+            and not {"source_channels", "analysis_channels", "stereo_mix"}.intersection(requirements)
+            and current_requirements["source_channels"] == [1]):
+        for key in ("channels", "source_channels", "analysis_channels", "stereo_mix"):
+            requirements[key] = current_requirements[key]
     _require(_preparation_summary(result) == saved_summary,
              "PROJECT_IDENTITY", 'The project summary differs from the verified frozen candidates.')
     review = root / REVIEW_RELATIVE

@@ -130,7 +130,8 @@ class InputInspectionDialog(QDialog):
             ("summary", "sources", "duplicate_pcm_groups", "input_requirements", "limits")}))
         layout.addWidget(self.details, 1)
         note = QLabel("Supported input: WAV, FLAC, MP3, Ogg Vorbis or AIFF (.aif/.aiff). "
-                      "Files must be mono, share a sample rate of at least 32000 Hz, and contain segments no longer than 30 seconds. "
+                      "Mono and stereo files can share a batch. Stereo channels are averaged for listening and analysis. "
+                      "Files must share a sample rate of at least 32000 Hz and contain segments no longer than 30 seconds. "
                       "This inspection is read-only. Import freezes this reviewed input identity and runs the fixed recipe. "
                       "No human labels are loaded. The first invalid input stops inspection.")
         note.setWordWrap(True)

@@ -101,44 +101,55 @@ def _audio_header(path):
     _require(detected == expected and (info.format != "OGG" or info.subtype == "VORBIS")
              and (info.format != "MP3" or info.subtype == "MPEG_LAYER_III"), "SOURCE_FORMAT",
              f"{path.name}: expected {expected} audio, found {info.format} ({info.subtype}).")
-    _require(info.channels == 1, "AUDIO_CHANNELS",
-             f"{path.name}: audio must be mono; channels are not combined automatically.")
+    _require(info.channels in (1, 2), "AUDIO_CHANNELS",
+             f"{path.name}: audio must have one or two channels (found {info.channels}).")
     _require(info.samplerate >= LIMITS["minimum_sample_rate_hz"],
              "AUDIO_SAMPLE_RATE", "The fixed 1–15 kHz recipe requires a sample rate of at least 32000 Hz; audio is not resampled automatically.")
     return info
 
 
-def _audio_view(path, digest, scratch, *, segment, cancelled=None):
-    info = _audio_header(path)
-    if info.format == "MP3":
-        # MPEG time indexes can estimate duration and seek to the wrong frame.
-        # Use a sequential decode for both feature extraction and later review.
-        from .annotation_audio_decode import decode_to_wave
+def _audio_view(path, digest, scratch, *, segment, cancelled=None, source_info=None):
+    info = source_info if source_info is not None else _audio_header(path)
+    def check_frames(frames):
+        _require(frames >= LIMITS["minimum_frames"], "AUDIO_TOO_SHORT", "The audio is shorter than 8 frames.")
+        if segment:
+            _require(frames / info.samplerate <= LIMITS["maximum_segment_seconds"],
+                     "AUDIO_TOO_LONG", "An input clip exceeds 30 seconds; segment it into syllables before importing.")
+
+    mp3 = info.format == "MP3"
+    if not mp3:
+        check_frames(info.frames)
+    if mp3 or info.channels == 2:
+        from .annotation_audio_decode import decode_to_wave, downmix_to_wave
         decoded = Path(scratch) / (digest + ".wav")
         if not decoded.exists():
             try:
-                decode_to_wave(path, decoded, max_seconds=LIMITS["maximum_segment_seconds"] if segment else None,
-                               cancelled=cancelled)
+                if mp3:
+                    # MPEG table estimates can be wrong. Count frames by decoding to EOF.
+                    decode_to_wave(path, decoded, max_seconds=LIMITS["maximum_segment_seconds"] if segment else None,
+                                   cancelled=cancelled, source_channels=info.channels)
+                else:
+                    downmix_to_wave(path, decoded, cancelled=cancelled)
             except (RuntimeError, ValueError, OSError) as exc:
                 _cancel(cancelled)
                 raise StageAError("INVALID_AUDIO", f"{path.name}: {exc}") from exc
         pcm_info = sf.info(decoded)
-        _require(pcm_info.channels == info.channels and pcm_info.samplerate == info.samplerate,
-                 "INVALID_AUDIO", f"{path.name}: decoded channel count or sample rate differs from the source.")
+        _require(pcm_info.channels == 1 and pcm_info.samplerate == info.samplerate
+                 and (mp3 or pcm_info.frames == info.frames),
+                 "INVALID_AUDIO", f"{path.name}: decoded audio does not preserve the source frame timing.")
+        if mp3:
+            check_frames(pcm_info.frames)
         path, info = decoded, pcm_info
-    _require(info.frames >= LIMITS["minimum_frames"], "AUDIO_TOO_SHORT", "The audio is shorter than 8 frames.")
-    if segment:
-        _require(info.frames / info.samplerate <= LIMITS["maximum_segment_seconds"],
-                 "AUDIO_TOO_LONG", "An input clip exceeds 30 seconds; segment it into syllables before importing.")
     return path, info
 
 
-def _input_requirements(audio_files):
+def _input_requirements(audio_files, source_channels):
     formats = sorted({INPUT_FORMATS[path.suffix.lower()] for path in audio_files})
-    return {"format": ", ".join(formats), "channels": 1, "same_sample_rate_required": True,
+    return {"format": ", ".join(formats), "channels": [1, 2], "source_channels": sorted(source_channels),
+            "analysis_channels": 1, "same_sample_rate_required": True,
             "minimum_sample_rate_hz": LIMITS["minimum_sample_rate_hz"],
             "mfcc_logmel_frequency_band_hz": [1000, 15000],
-            "automatic_resampling": False, "automatic_downmixing": False,
+            "automatic_resampling": False, "automatic_downmixing": 2 in source_channels, "stereo_mix": "mean_left_right",
             "automatic_bandpass_filtering": False,
             "capacity_note": "The engineering input limits are 5000 items and 2 GiB of audio including parent files. Small-scale acceptance does not establish performance at these limits."}
 
@@ -180,13 +191,18 @@ def _inspect(source_dir, scratch, cancelled=None):
     _require(isinstance(items, list) and 0 < len(items) <= LIMITS["max_items"],
              "SOURCE_COUNT", f"Provide 1–5000 segmented syllables in these formats: {FORMAT_NAMES}.")
     rows, seen_files, seen_ids, parent_ids, source_ids = [], set(), set(), {}, {}
-    audio_files, rates = {}, set()
+    audio_files, headers, rates = {}, {}, set()
     def register_audio(path):
         if path not in audio_files:
             size = path.stat().st_size
             _require(sum(value["bytes"] for value in audio_files.values()) + size
                      <= LIMITS["max_total_audio_bytes"], "SOURCE_SIZE", "The engineering import limit is 2 GiB of audio, including parent files.")
             audio_files[path] = {"sha256": _sha(path), "bytes": size}
+            headers[path] = _audio_header(path)
+            # Legacy mono file receipts contain only size and SHA. Stereo also
+            # records its original channel count before generating review media.
+            if headers[path].channels == 2:
+                audio_files[path]["channels"] = 2
     fields = {"file", "item_id", "parent_file", "source_clip_id",
               "source_frame_start", "source_frame_stop", "raw_recording_id", "raw_recording_evidence"}
     parent_pcm = {}
@@ -209,7 +225,8 @@ def _inspect(source_dir, scratch, cancelled=None):
                  and original_id not in seen_ids, "DUPLICATE_ID", "Input syllable IDs must be valid and unique.")
         seen_ids.add(original_id)
         register_audio(path)
-        pcm_path, info = _audio_view(path, audio_files[path]["sha256"], scratch, segment=True, cancelled=cancelled)
+        pcm_path, info = _audio_view(path, audio_files[path]["sha256"], scratch, segment=True,
+                                     cancelled=cancelled, source_info=headers[path])
         samples, rate, pcm_sha = _pcm(pcm_path)
         _require(rate == info.samplerate and len(samples) == info.frames,
                  "INPUT_CHANGED", "The audio identity changed during reading.")
@@ -222,7 +239,7 @@ def _inspect(source_dir, scratch, cancelled=None):
             register_audio(parent)
             if parent not in parent_views:
                 parent_views[parent] = _audio_view(parent, audio_files[parent]["sha256"], scratch,
-                                                   segment=False, cancelled=cancelled)
+                                                   segment=False, cancelled=cancelled, source_info=headers[parent])
             parent_pcm_path, parent_info = parent_views[parent]
             start, stop = entry["source_frame_start"], entry["source_frame_stop"]
             _require(parent_info.samplerate == rate and 0 <= start < stop <= parent_info.frames
@@ -288,7 +305,7 @@ def _inspect(source_dir, scratch, cancelled=None):
             "context_available_count": sum(r["context_kind"] == "source_parent" for r in rows),
             "audio_bytes": sum(v["bytes"] for v in audio_files.values()),
             "source_fingerprint": _hash(signature), "limits": copy.deepcopy(LIMITS),
-            "input_requirements": _input_requirements(audio_files),
+            "input_requirements": _input_requirements(audio_files, {info.channels for info in headers.values()}),
             "duplicate_pcm_groups": [v for v in duplicates.values() if len(v) > 1],
             "raw_recording_declarations": {"declared_items": sum(r["raw_recording_id"] is not None for r in rows),
                 "unknown_items": sum(r["raw_recording_id"] is None for r in rows),
@@ -522,12 +539,19 @@ def _prepare_stage_a(source_dir, output_dir, progress, cancelled, plan_only, scr
                     Path(assistance.__file__), Path(feature_config.__file__),
                     Path(audio_processor.__file__), Path(log_mel.__file__)]
     packages = ["numpy", "scipy", "scikit-learn", "librosa", "soundfile", "umap-learn", "hdbscan"]
+    requirements = plan["input_requirements"]
+    if requirements["automatic_downmixing"]:
+        manifest["channel_mix"] = requirements["stereo_mix"]
+        manifest["source_channels"] = requirements["source_channels"]
     if processing:
         manifest["audio_preprocessing"] = processing
         source_paths.append(Path(bp.__file__))
     if any(row["pcm_path"] != row["path"] or row["parent_pcm_path"] != row["parent"] for row in rows):
         source_paths.append(Path(__file__).with_name("annotation_audio_decode.py"))
-        packages.append("PySide6")
+        if not processing and requirements["automatic_downmixing"]:
+            source_paths.append(Path(bp.__file__))
+        if any(path.suffix.lower() == ".mp3" for row in rows for path in (row["path"], row["parent"])):
+            packages.append("PySide6")
     dependencies = {}
     for name in packages:
         try:
