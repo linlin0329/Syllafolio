@@ -1,5 +1,6 @@
 """Portable launcher with isolated current-run logs."""
 from pathlib import Path
+import json
 import subprocess
 import sys
 import traceback
@@ -28,7 +29,7 @@ def main():
         detail = traceback.format_exc(); (folder / "startup.log").write_text(detail, encoding="utf-8")
         print(detail, file=sys.stderr)
     result = {"run_id": config["run_id"], "exit_code": code, "status": "process_exited" if code == 0 else "launch_failed",
-              "native_windows_process": sys.platform == "win32", "version": "0.1.0",
+              "native_windows_process": sys.platform == "win32", "version": json.loads((ROOT / "BUILD_INFO.json").read_text("utf-8"))["version"],
               "diagnostics_dir": str(folder), "windows_acceptance_complete": False}
     atomic_json(folder / "launch_result.json", result); publish_launch(ROOT, config["run_id"], result)
     return code

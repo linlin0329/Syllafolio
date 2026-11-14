@@ -14,7 +14,7 @@ Get-FileHash -Algorithm SHA256 ../new-build/Syllafolio-Windows-x64.zip
 
 Use a new destination for each build. The ZIP and its receipt identify that build's bytes. The portable ZIP includes the current `src/syllafolio` package (including `acoustics`), `configs`, the English startup scripts and the verified runtime. In the extracted package, application imports come from `app/src/syllafolio`. The seed's application code and metadata are excluded. This procedure reuses compiled dependencies; it does not rebuild CPython or Qt from source.
 
-The generated version is **0.1.0**. `RUNTIME_PROFILE.json` records the runtime subset; `BUILD_INFO.json`, `APP_SOURCE_MANIFEST.json` and `INTEGRITY.json` bind the build and its files. A successful build receipt records the ZIP's actual SHA-256 and byte length. Keep it with that ZIP for installer construction and independent verification.
+The generated version is **1.0.0**. `RUNTIME_PROFILE.json` records the runtime subset; `BUILD_INFO.json`, `APP_SOURCE_MANIFEST.json` and `INTEGRITY.json` bind the build and its files. A successful build receipt records the ZIP's actual SHA-256 and byte length. Keep it with that ZIP for installer construction and independent verification.
 
 After extraction, `Run_Checks.cmd --static-only` verifies installed files and imports. Running `Run_Checks.cmd` also opens and closes a blank Windows window. Use a separate test project to check real playback and catalogue delivery.
 

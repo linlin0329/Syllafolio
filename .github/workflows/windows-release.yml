@@ -1,0 +1,74 @@
+name: Build and verify Windows release
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 75
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Retrieve the hash-locked Windows runtime seed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.1.0 --repo $env:GITHUB_REPOSITORY --pattern Syllafolio-Windows-x64.zip --dir "$env:RUNNER_TEMP/seed"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $actual = (Get-FileHash "$env:RUNNER_TEMP/seed/Syllafolio-Windows-x64.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne '7f2d1371c8920c1095f01400c0e2daa3be12e5252e1b13a32854e3c6a241e292') {
+            throw "The runtime seed does not match the published v0.1.0 checksum."
+          }
+
+      - name: Build portable ZIP, launcher and installer
+        run: |
+          $out = Join-Path $env:GITHUB_WORKSPACE 'release-output'
+          $qa = Join-Path $env:GITHUB_WORKSPACE 'release-evidence'
+          $work = Join-Path $env:RUNNER_TEMP 'build'
+          New-Item -ItemType Directory -Path $out, $qa, $work | Out-Null
+          $zip = Join-Path $out 'Syllafolio-Windows-x64.zip'
+          python -B tools/build_windows.py --runtime-seed "$env:RUNNER_TEMP/seed/Syllafolio-Windows-x64.zip" --output "$zip" --receipt "$qa/portable.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $receipt = Get-Content -LiteralPath "$qa/portable.json" -Raw | ConvertFrom-Json
+          $payloadHash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($receipt.status -ne 'passed' -or $receipt.version -ne '1.0.0' -or $receipt.sha256 -ne $payloadHash -or $receipt.bytes -ne (Get-Item $zip).Length) {
+            throw "The portable build receipt does not match the release payload."
+          }
+          $setup = Join-Path $out "Syllafolio-Setup-$($receipt.version)-x64.exe"
+          & ./tools/windows-installer/launcher/build.ps1 -Output "$work/Syllafolio.exe"
+          python -B tools/windows-installer/tools/build_installer.py --payload "$zip" --expected-payload-sha256 "$payloadHash" --launcher "$work/Syllafolio.exe" --icon tools/windows-installer/branding/Syllafolio.ico --work "$work/obj" --output "$setup" --receipt "$qa/installer.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($binary in @($setup, "$work/Syllafolio.exe", "$work/obj/Uninstall.exe")) {
+            $version = (Get-Item -LiteralPath $binary).VersionInfo
+            if ($version.ProductVersion -ne $receipt.version -or $version.FileMajorPart -ne 1 -or $version.FileMinorPart -ne 0 -or $version.FileBuildPart -ne 0) {
+              throw "Windows version resource does not match release: $binary ($($version.ProductVersion), $($version.FileVersion))"
+            }
+          }
+
+      - name: Exercise the Windows installer, application and checkout tests
+        run: |
+          python -B tools/verify_windows_release.py --release release-output --evidence release-evidence --work "$env:RUNNER_TEMP/qa"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Save build and verification records
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-evidence/
+          if-no-files-found: warn
+
+      - name: Save verified distribution
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-output/
+          if-no-files-found: error
+          compression-level: 0

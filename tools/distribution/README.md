@@ -1,4 +1,4 @@
-# Syllafolio Windows x64 0.1.0
+# Syllafolio Windows x64 1.0.0
 
 Fully extract this package, then double-click **Start.cmd**. It opens an empty workspace. No audio samples, demonstration projects, user projects or application acceptance datasets are included. Python and the fixed dependencies are private to this package; no Python/Conda installation or network download is needed.
 

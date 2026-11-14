@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QToolButton, QVBoxLayout, QWidget,
 )
 
+from . import __version__
 from .annotation_desktop_project import create_project, open_project, backup_project
 from .annotation_desktop_jobs import (
     CancelRequests, CloseCoordinator, DesktopJobError, ForegroundOperation,
@@ -168,7 +169,7 @@ class MainWindow(QMainWindow):
         apply_light_theme()
         self.diagnostics = DesktopDiagnostics(diagnostics_dir)
         self._active_operation = "desktop startup"
-        self.setWindowTitle("Syllafolio — Native Desktop Technical Prototype")
+        self.setWindowTitle(f"Syllafolio {__version__}")
         self.resize(1440, 1000)
         self.setMinimumSize(980, 600)
         self.setStyleSheet(STYLE)
@@ -4033,7 +4034,7 @@ DesktopWindow = MainWindow
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Syllafolio native desktop technical prototype")
+    parser = argparse.ArgumentParser(description="Syllafolio desktop annotation and acoustic review")
     parser.add_argument("--project", type=Path, help="Open an existing desktop project")
     parser.add_argument("--smoke-output", type=Path, help="Write a limited startup report and close without annotating")
     args = parser.parse_args(argv)
@@ -4041,6 +4042,7 @@ def main(argv=None):
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_DontUseNativeDialogs, True)
     application = QApplication.instance() or QApplication(sys.argv[:1])
     application.setApplicationName("Syllafolio Desktop Prototype")
+    application.setApplicationVersion(__version__)
     window = MainWindow()
     window.show()
     if args.project:

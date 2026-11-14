@@ -42,6 +42,7 @@ def main():
         raise RuntimeError("Application source must come from this portable package.")
     build = json.loads((ROOT / "BUILD_INFO.json").read_text(encoding="utf-8"))
     window = desktop.MainWindow()
+    application.setApplicationVersion(build["version"])
     window.setWindowTitle("Syllafolio " + build["version"])
     window.show()
     if args.project:

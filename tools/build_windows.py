@@ -19,7 +19,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 sys.dont_write_bytecode = True
 
-VERSION = "0.1.0"
+VERSION = "1.0.0"
 TOOLS = Path(__file__).resolve().parent
 RUNTIME_PREFIXES = ("_runtime/", "site-packages/")
 APP_FOLDERS = ("src/syllafolio", "configs/annotation_assistant",
