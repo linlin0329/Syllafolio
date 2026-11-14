@@ -16,6 +16,20 @@ Get-FileHash -Algorithm SHA256 .\Syllafolio-Setup-0.1.0-x64.exe
 
 Double-click the installer and choose **Install**. Open **Syllafolio** from the desktop shortcut or the Start menu. If you prefer to keep the desktop clear, uncheck **Create a desktop shortcut** before installing. The installation is for the current Windows account. You can also download **Syllafolio-Windows-x64.zip**, extract the whole folder and double-click `Start.cmd`.
 
+## Try Syllafolio with example audio
+
+To try Syllafolio with real bird recordings, download
+`Syllafolio-example-audio-180-syllables-v1.0.0.zip` from
+[Zenodo](https://doi.org/10.5281/zenodo.24213511). It contains 180 Eurasian
+tree sparrow syllables and the 26 recording excerpts they came from.
+The syllables open without preassigned type labels, so you can listen,
+compare spectrograms and make your own annotations.
+
+Extract the ZIP. In Syllafolio, choose **Project → New project from syllables…**
+and select the `data/` folder containing `segments.json`. The README inside
+the archive includes a short guide in English and Chinese to importing the
+audio and playing your first group of syllables.
+
 ## Review a project
 
 1. Choose **Project → New project from syllables…** for a folder of segmented audio, or **Project → New project from recording and annotations…** for one recording and a TextGrid, Audacity or single-recording Raven table. Preview and audition the intervals before confirming the project details. External labels remain source references, not automatic family assignments. To inspect existing work, choose **Open project…** and select a properly closed project copy.
