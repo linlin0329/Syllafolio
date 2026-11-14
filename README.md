@@ -27,8 +27,8 @@ compare spectrograms and make your own annotations.
 
 Extract the ZIP. In Syllafolio, choose **Project → New project from syllables…**
 and select the `data/` folder containing `segments.json`. The README inside
-the archive includes a short guide in English and Chinese to importing the
-audio and playing your first group of syllables.
+the archive explains how to import the audio and play your first group of
+syllables.
 
 ## Review a project
 
