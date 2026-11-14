@@ -17,12 +17,15 @@ from .annotation_acoustics import _cancel
 from .annotation_batch_acoustics import render_page_display
 from .annotation_desktop_widgets import AuditionCanvas, PcmPlayer
 from .annotation_english import system_error
+from .annotation_page_layout import LEGACY_PAGE_ITEMS, page_capacity, validate_page_layout
 
 
-def prepare_audition(project, item_ids, gap_seconds, check_cancelled=None):
+def prepare_audition(project, item_ids, gap_seconds, check_cancelled=None, *, page_layout=None):
     """Read the project's actual PCM, retaining the requested order and exact frame boundaries."""
-    if not 1 <= len(item_ids) <= 10 or len(set(item_ids)) != len(item_ids):
-        raise ValueError("Choose one to ten distinct syllables for audition.")
+    layout = validate_page_layout(page_layout) if page_layout is not None else None
+    capacity = page_capacity(layout) if layout is not None else LEGACY_PAGE_ITEMS
+    if not 1 <= len(item_ids) <= capacity or len(set(item_ids)) != len(item_ids):
+        raise ValueError(f"Choose one to {capacity} distinct syllables for audition.")
     if not math.isfinite(gap_seconds) or not .05 <= gap_seconds <= 2:
         raise ValueError("The inter-syllable gap must be between 0.05 and 2 seconds.")
     rate = project.dataset.sample_rate_hz
@@ -48,9 +51,12 @@ def prepare_audition(project, item_ids, gap_seconds, check_cancelled=None):
         folder = Path(temporary)
         audio = folder / "audition.wav"
         sf.write(audio, pcm, rate, subtype="FLOAT")
-        display = render_page_display(audio, slots, folder, check_cancelled=check_cancelled)
+        display = render_page_display(audio, slots, folder, check_cancelled=check_cancelled, page_layout=layout)
         image = (folder / display["spectrogram_path"]).read_bytes()
-    return pcm, rate, {"slots": slots, "display": display["display"]}, image
+    page = {"slots": slots, "display": display["display"]}
+    if layout is not None:
+        page["page_layout"] = layout
+    return pcm, rate, page, image
 
 
 class ComparisonAuditionWidget(QWidget):
@@ -89,14 +95,14 @@ class ComparisonAuditionWidget(QWidget):
         self.stop_button.clicked.connect(self.stop)
         self.clear()
 
-    def set_items(self, item_ids):
+    def set_items(self, item_ids, *, page_layout=None):
         self.clear()
         if not item_ids:
             return
         self.status.setText("Loading audition…")
         self._cancelled = Event()
         self._future = self._executor.submit(prepare_audition, self.project, tuple(item_ids),
-                                             self.gap_seconds, self._cancelled.is_set)
+                                             self.gap_seconds, self._cancelled.is_set, page_layout=page_layout)
         self._timer.start()
 
     def _check_ready(self):

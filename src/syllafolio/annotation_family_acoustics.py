@@ -10,8 +10,42 @@ from scipy.spatial.distance import pdist, squareform
 from .annotation_acoustics import _cancel, _hash, _require, _sha, _write_json
 
 FAMILY_CLUSTER_POLICY = "ordinary-family-cluster-v1"
+FAMILY_AUDITION_POLICY = "ordinary-family-audition-v2"
 POOL_CLUSTER_POLICY = "ordinary-pool-cluster-v1"
 SMALL_METHOD = "family-small-global94-average-linkage-v1"
+FAMILY_ORDER_METHOD = "frozen_global94_average_linkage_leaf_order"
+
+
+def family_audition_route(member_count):
+    """Choose a preparation method for an ordinary human-family review."""
+    if member_count <= 10:
+        return "direct"
+    if member_count <= 30:
+        return "family_order"
+    return "family_cluster"
+
+
+def _global94_tree(dataset, ids):
+    values = np.asarray([dataset._global94[ident] for ident in ids], dtype=np.float64)
+    _require(values.shape == (len(ids), 94) and np.isfinite(values).all(),
+             "INVALID_FEATURE", "The frozen 94D representation is incomplete or contains non-finite values.")
+    distances = pdist(values, metric="euclidean")
+    tree = linkage(distances, method="average", optimal_ordering=True)
+    return distances, tree
+
+
+def family_similarity_order(dataset, item_ids, check_cancelled=None):
+    """Order the complete family by frozen acoustic distances without cutting the tree."""
+    ids = sorted(dataset._select(item_ids, "item_ids", nonempty=True))
+    _require(family_audition_route(len(ids)) == "family_order", "BATCH_FAMILY_ROUTE",
+             "Continuous similarity ordering requires a family of 11–30 syllables.")
+    _cancel(check_cancelled)
+    distances, tree = _global94_tree(dataset, ids)
+    _cancel(check_cancelled)
+    # Equal distances provide no evidence to reorder the stable IDs.
+    if np.all(distances == distances[0]):
+        return ids
+    return [ids[i] for i in leaves_list(tree)]
 
 
 def prepare_small_family(dataset, item_ids, output_dir, *, check_cancelled=None, scope_kind="family"):
@@ -31,13 +65,8 @@ def prepare_small_family(dataset, item_ids, output_dir, *, check_cancelled=None,
         method, cut_reason = "single_member_no_clustering", "single_member"
     else:
         try:
-            values = np.asarray([dataset._global94[ident] for ident in ids], dtype=np.float64)
-            _require(values.shape == (count, 94) and np.isfinite(values).all(),
-                     "INVALID_FEATURE", "The frozen 94D representation is incomplete or contains non-finite values.")
-            _cancel(check_cancelled)
-            condensed = pdist(values, metric="euclidean")
+            condensed, tree = _global94_tree(dataset, ids)
             distances = squareform(condensed)
-            tree = linkage(condensed, method="average", optimal_ordering=True)
             order = leaves_list(tree).tolist()
             heights = tree[:, 2]
             tolerance = np.finfo(np.float64).eps * max(1.0, float(heights[-1])) * 64

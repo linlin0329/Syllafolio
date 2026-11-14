@@ -276,11 +276,12 @@ class CatalogueReviewController:
                     "target_ids": list(review["item_ids"]), "return_view": "final"}
 
     def prepare_directed(self, project, family_id, context, *, generation, idempotency_key, purpose="", reopen_reason="",
-                         gap_seconds=.4, normalization="per_item", use_direct_exception=False, exception_reason=""):
+                         gap_seconds=.4, normalization="per_item", use_direct_exception=False, exception_reason="", page_layout=None):
         _require(isinstance(idempotency_key, str) and 0 < len(idempotency_key) <= 160, "IDEMPOTENCY_REQUIRED", "Use an explicit directed request key.")
         context = self._context(context)
         intent = {"context": context, "purpose": purpose, "reopen_reason": reopen_reason, "gap_seconds": gap_seconds,
-                  "normalization": normalization, "use_direct_exception": use_direct_exception, "exception_reason": exception_reason}
+                  "normalization": normalization, "use_direct_exception": use_direct_exception, "exception_reason": exception_reason,
+                  "page_layout": page_layout}
         _require(all(isinstance(value, str) for value in (purpose, reopen_reason, exception_reason)) and type(use_direct_exception) is bool,
                  "DIRECTED_CONTEXT", "Review purpose, reopen/exception reasons and exception selection must be explicit.")
         key = ("directed", idempotency_key)
@@ -312,6 +313,8 @@ class CatalogueReviewController:
                     "expected_definition_fingerprint": scope["definition_fingerprint"], "reason": purpose.strip() or context["reason"],
                     "route": "direct_exception" if use_direct_exception else scope["route"], "gap_seconds": gap_seconds,
                     "normalization": normalization, "review_origin": "directed_recheck", "directed_context": context}
+                if page_layout is not None:
+                    payload["page_layout"] = page_layout
                 if reopen_reason:
                     payload["reopen_reason"] = reopen_reason
                 if use_direct_exception:
@@ -681,6 +684,7 @@ class CatalogueReviewDialog(QDialog):
     def _prepare(self):
         _require(self._current() and not self.owner._busy, "CATALOGUE_BUSY", "Wait before requesting a directed round.")
         self._before_change(); value = self._directed_payload()
+        value["page_layout"] = self.owner.review_page_layout()
         self._waiting = True; self._set_enabled()
         def done(result): self._pending_review_id = result["review_id"]; self.owner.state = self.project.snapshot()
         self.owner._run("Prepare one explicitly directed human family", lambda _progress, _cancelled: self.controller.prepare_directed(self.project,

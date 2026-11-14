@@ -222,13 +222,13 @@ class PoolReviewController:
                 "scope": scope}
 
     def prepare(self, project, *, generation, idempotency_key, reopen_reason="", use_direct_exception=False,
-                exception_reason="", gap_seconds=.4, normalization="per_item", empty_only=False, refreeze=False):
+                exception_reason="", gap_seconds=.4, normalization="per_item", empty_only=False, refreeze=False, page_layout=None):
         _require(isinstance(reopen_reason, str) and isinstance(exception_reason, str), "POOL_REASON", "Reasons must be explicit text.")
         _require(all(type(flag) is bool for flag in (use_direct_exception, empty_only, refreeze)),
                  "POOL_SELECTION", "Select the route explicitly.")
         intent = {"reopen_reason": reopen_reason.strip(), "use_direct_exception": use_direct_exception,
                   "exception_reason": exception_reason.strip(), "gap_seconds": gap_seconds, "normalization": normalization,
-                  "empty_only": empty_only, "route": self.new_route, "refreeze": refreeze}
+                  "empty_only": empty_only, "route": self.new_route, "refreeze": refreeze, "page_layout": page_layout}
         with project.service._lock:
             with self._lock:
                 binding = self._check_owner(project, generation)
@@ -261,6 +261,8 @@ class PoolReviewController:
                          "Confirm the empty-pool skip before recording it.")
                 payload = {"route": "direct_exception" if use_direct_exception else self.new_route,
                            "gap_seconds": gap_seconds, "normalization": normalization}
+                if page_layout is not None:
+                    payload["page_layout"] = page_layout
                 if current_mode and not empty_only:
                     payload["pool_mode"] = "current_pool"
                 if intent["reopen_reason"]:
@@ -482,7 +484,8 @@ class PoolReviewDialog(QDialog):
         arguments = {"generation": self.generation, "idempotency_key": "desktop-pool-" + uuid.uuid4().hex,
             "reopen_reason": self.reopen_reason.toPlainText(), "use_direct_exception": self.exception.isChecked(),
             "exception_reason": self.exception_reason.toPlainText(), "gap_seconds": self.gap.value(),
-            "normalization": self.normalization.currentData(), "empty_only": empty_only}
+            "normalization": self.normalization.currentData(), "empty_only": empty_only,
+            "page_layout": self.owner.review_page_layout()}
         def done(result):
             self._pending_review_id = result["review_id"]
             self.owner.state = self.project.snapshot(); self.refresh()

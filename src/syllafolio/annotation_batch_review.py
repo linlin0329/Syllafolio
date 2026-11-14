@@ -15,6 +15,8 @@ import time
 import uuid
 
 from .annotation_assistant_contracts import canonical_hash, require
+from .annotation_family_acoustics import FAMILY_AUDITION_POLICY, family_audition_route
+from .annotation_page_layout import page_capacity, validate_page_layout
 from .annotation_state import _require
 from .annotation_service import utc
 
@@ -981,10 +983,13 @@ def apply_batch(store, state, payload):
             record["carried_over"] = carried_over_links(batch)
     elif action == "prepare":
         review = record["review"]
-        if review.get("route") == "family_cluster":
+        if review.get("route") in {"family_order", "family_cluster"} or review.get("family_audition_policy") == FAMILY_AUDITION_POLICY:
             _require(review.get("stage") == "family" and review.get("review_origin") == "family_recheck"
                      and not review.get("directed_context") and not review.get("directed_issue_id"),
-                     "BATCH_FAMILY_ROUTE", 'This clustering method requires the full scope of an ordinary human-family review.')
+                     "BATCH_FAMILY_ROUTE", 'This preparation method requires the full scope of an ordinary human-family review.')
+            if review.get("family_audition_policy") == FAMILY_AUDITION_POLICY and review["route"] != "direct_exception":
+                _require(review["route"] == family_audition_route(len(review["item_ids"])),
+                         "BATCH_FAMILY_ROUTE", "The preparation method does not match the complete family size.")
         if review.get("route") == "pool_cluster":
             _require(review.get("stage") == "pool" and review.get("review_origin") == "pooled_review"
                      and not review.get("directed_context") and not review.get("directed_issue_id"),
@@ -1034,8 +1039,11 @@ def apply_batch(store, state, payload):
             pages = record["pages"]
             flat = [i for page in pages for i in page["item_ids"]]
             _require(len(flat) == len(set(flat)) and set(flat) == set(review["item_ids"]), "BATCH_COVERAGE", 'A concatenated page has missing or duplicate items.')
-            _require(all(0 < len(p["item_ids"]) <= 10 and len(p["slots"]) == len(p["item_ids"]) for p in pages),
-                     "BATCH_PAGES", 'Each page must contain 1–10 items and retain its slot mapping.')
+            layout = review.get("page_layout")
+            capacity = page_capacity(layout)
+            _require(all(0 < len(p["item_ids"]) <= capacity and len(p["slots"]) == len(p["item_ids"])
+                         and p.get("page_layout") == layout for p in pages),
+                     "BATCH_PAGES", 'Each page must retain its frozen capacity, time scale and slot mapping.')
             _require(len({p["page_id"] for p in pages}) == len(pages) and all(
                 [slot["item_id"] for slot in p["slots"]] == p["item_ids"] for p in pages),
                 "BATCH_PAGES", 'Page IDs must be unique and slots must match the full syllable order.')
@@ -1253,6 +1261,8 @@ class BatchReviewService:
         if review.get("family_audition_policy"):
             result.update(family_audition_policy=review["family_audition_policy"],
                 family_acoustic_code_sha256=hashlib.sha256(Path(__file__).with_name("annotation_family_acoustics.py").read_bytes()).hexdigest())
+            if review["family_audition_policy"] == FAMILY_AUDITION_POLICY and family_audition_route(len(item_ids)) != "family_cluster":
+                result["fit_ids"] = []
         if review.get("pool_audition_policy"):
             result.update(pool_audition_policy=review["pool_audition_policy"],
                 pool_acoustic_code_sha256=hashlib.sha256(Path(__file__).with_name("annotation_family_acoustics.py").read_bytes()).hexdigest())
@@ -1369,7 +1379,8 @@ class BatchReviewService:
                 review = copy.deepcopy(s.store.snapshot(s.run_id)["batch_review"]["reviews"][review_id])
             folder = s.work_dir / "batch_reviews" / review_id
             result = prepare_review(s.dataset, review["item_ids"], folder, review["route"],
-                                    review["gap_seconds"], review["normalization"], check_cancelled=event.is_set)
+                                    review["gap_seconds"], review["normalization"], check_cancelled=event.is_set,
+                                    page_layout=review.get("page_layout"))
             with s._lock:
                 if event.is_set():
                     self._system(review_id, status="cancelled", ended_at=utc(), compute_wall_seconds=time.monotonic()-started)
@@ -1487,7 +1498,8 @@ class BatchReviewService:
                     _text(payload.get(key), 'Enter a family name, diagnostic criteria and the basis for creating it.')
                 record.update(payload, family_id=payload.get("family_id") or "F-"+ident[-10:])
             elif action in {"batch_prepare", "batch_prepare_pool", "batch_prepare_family"}:
-                allowed = {"group_id", "route", "gap_seconds", "normalization", "exception_reason", "reopen_reason", "exception_source_review_id"}
+                allowed = {"group_id", "route", "gap_seconds", "normalization", "page_layout",
+                           "exception_reason", "reopen_reason", "exception_source_review_id"}
                 if action == "batch_prepare_pool":
                     allowed |= {"pool_mode"}
                 if action == "batch_prepare_family":
@@ -1548,15 +1560,19 @@ class BatchReviewService:
                         reject_review_overlap(state, ids, previous["review_id"] if previous else None,
                                               allow_current_pool_overlap=stage == "first")
                 route = payload.get("route", "cluster" if stage == "pool" else None)
-                require(route in {"direct", "cluster", "direct_exception", "family_cluster", "pool_cluster"}, "BATCH_ROUTE", 'Choose how to organize this round.')
+                ordinary_family = stage == "family" and payload.get("review_origin", "family_recheck") == "family_recheck" and payload.get("directed_context") is None
+                if ordinary_family and route in {"direct", "cluster", "family_cluster"}:
+                    # Older family clients sent an explicit direct/cluster preference.
+                    # The server freezes the actual method for each newly prepared round.
+                    route = family_audition_route(len(ids))
+                require(route in {"direct", "cluster", "direct_exception", "family_order", "family_cluster", "pool_cluster"}, "BATCH_ROUTE", 'Choose how to organize this round.')
                 if previous and (previous.get("closed") or previous.get("decisions")):
                     _text(payload.get("reopen_reason"), 'A previous round has closed. Give the new evidence or reason for reopening it.')
                 if route == "pool_cluster":
                     require(stage == "pool", "BATCH_POOL_ROUTE", 'This clustering method requires the complete global pool.')
-                elif route == "family_cluster":
-                    require(stage == "family" and payload.get("review_origin", "family_recheck") == "family_recheck"
-                            and payload.get("directed_context") is None,
-                            "BATCH_FAMILY_ROUTE", 'This clustering method requires the full scope of an ordinary human-family review.')
+                elif route in {"family_order", "family_cluster"}:
+                    require(ordinary_family and route == family_audition_route(len(ids)),
+                            "BATCH_FAMILY_ROUTE", 'This method requires an ordinary family review of the corresponding size.')
                 elif route == "direct_exception":
                     _text(payload.get("exception_reason"), 'For direct audition, explain why the calculation failed or was inapplicable.')
                 elif stage == "pool":
@@ -1594,6 +1610,8 @@ class BatchReviewService:
                                            for i in ids} if stage == "pool" else {},
                           "empty_pool_skip": stage == "pool" and not bool(ids),
                           "expected_item_versions": {i: item_version(state, i) for i in ids}}
+                if "page_layout" in payload:
+                    review["page_layout"] = validate_page_layout(payload["page_layout"])
                 if stage == "family":
                     review.update(family_id=family_id, reason=payload["reason"],
                                   family_member_fingerprint=family_member_fingerprint(state, family_id),
@@ -1601,9 +1619,8 @@ class BatchReviewService:
                                   catalogue_revision_at_preparation=state["catalogue_revision"],
                                   expected_family_members=list(ids),
                                   family_sources={i: copy.deepcopy(batch["assignments"].get(i)) for i in ids})
-                    if route == "family_cluster" or (route == "direct_exception" and previous and previous.get("family_audition_policy")):
-                        from .annotation_family_acoustics import FAMILY_CLUSTER_POLICY
-                        review["family_audition_policy"] = FAMILY_CLUSTER_POLICY
+                    if ordinary_family:
+                        review["family_audition_policy"] = FAMILY_AUDITION_POLICY
                 if stage == "pool" and (route == "pool_cluster" or
                         route == "direct_exception" and previous and previous.get("pool_audition_policy")):
                     from .annotation_family_acoustics import POOL_CLUSTER_POLICY

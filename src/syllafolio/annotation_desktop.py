@@ -43,7 +43,8 @@ from .annotation_desktop_diagnostics import DesktopDiagnostics
 from .annotation_desktop_stage_a import inspect_input
 from .annotation_desktop_stage_a_ui import InputInspectionDialog, StageAWorkspaceDialog
 from .annotation_desktop_organization import OrganizationControllerError
-from .annotation_desktop_family_review import FamilyReviewController
+from .annotation_desktop_family_review import FamilyReviewController, FAMILY_PREPARATION_LABELS
+from .annotation_family_acoustics import family_audition_route
 from .annotation_desktop_family_audition import FamilyAuditionPreview, family_review_conflicts
 from .annotation_desktop_fine_review import FineReviewDialog
 from .annotation_desktop_pool_review import PoolReviewController, PoolReviewDialog
@@ -53,6 +54,7 @@ from .annotation_desktop_sources import SourceRegistryDialog
 from .annotation_desktop_assessment import AssessmentDialog
 from .annotation_desktop_export import ExportDialog
 from .annotation_desktop_review_media import DisplayController, DisplayControlsWidget, ReviewMediaDialog
+from .annotation_desktop_page_settings import ReviewPageSettings
 from .annotation_desktop_interval_import import IntervalImportDialog
 
 
@@ -1674,8 +1676,12 @@ class MainWindow(QMainWindow):
         family_row = next((row for row in batch.get("families", [])
                            if self.selected_group == "family:" + row["family_id"]), {}) if family else {}
         empty_family = family and not family_row.get("member_ids")
-        self.prepare_button.setToolTip("Assign at least one syllable to this family first." if empty_family else
-                                       "Prepare all current family members for comparison." if family else "")
+        tooltip = ""
+        if family:
+            members = family_row.get("member_ids", [])
+            tooltip = (FAMILY_PREPARATION_LABELS[family_audition_route(len(members))]
+                       if members else "Assign at least one syllable to this family first.")
+        self.prepare_button.setToolTip(tooltip)
         self.prepare_button.setVisible(bool(new_scope))
         self.prepare_button.setEnabled(bool(new_scope and available and not empty_family and can_start_pool))
         can_finish = review.get("status") == "ready" and not any(review.get(k) for k in
@@ -1702,9 +1708,13 @@ class MainWindow(QMainWindow):
     def _show_scope_details(self):
         review = self._review()
         if review:
+            route = review.get("route", "")
+            label = route.replace("_", " ")
+            if review.get("stage") == "family":
+                label = FAMILY_PREPARATION_LABELS.get(route, label)
             lines = [f"Status: {'Finished' if review.get('closed') else review['status']}",
                      f"Syllables: {len(review.get('item_ids', []))}", f"Saved: {len(review.get('decisions', {}))}",
-                     f"Preparation: {review.get('route', '').replace('_', ' ')}"]
+                     f"Preparation: {label}"]
             for key in ("scope_stale_reason", "read_only_reason"):
                 if review.get(key):
                     lines.append(system_text(str(review[key])))
@@ -1950,6 +1960,11 @@ class MainWindow(QMainWindow):
             self._review_media_dialog.close()
             self._review_media_dialog = None
 
+    def review_page_layout(self, preferences=None):
+        metrics = self.slot_list.fontMetrics()
+        label_width = max(metrics.horizontalAdvance("40 · syllable-0001"), metrics.horizontalAdvance("Current family *")) + 12
+        return self.display_controller.page_layout(max(1, round(self.canvas.drawable_width_px())), label_width, preferences)
+
     def _show_review_display(self):
         if not self.project:
             raise ValueError("Open a project first.")
@@ -1957,11 +1972,12 @@ class MainWindow(QMainWindow):
             controls = self._display_dialog.findChild(DisplayControlsWidget)
             if not self._display_dialog.isVisible():
                 controls.sync()
+                self._display_dialog.findChild(ReviewPageSettings).sync()
             self._display_dialog.show()
             self._display_dialog.raise_()
             self._display_dialog.activateWindow()
             return controls
-        dialog = QDialog(self); dialog.setWindowTitle("Shared review display")
+        dialog = QDialog(self); dialog.setWindowTitle("Display settings")
         layout = QVBoxLayout(dialog)
         controls = DisplayControlsWidget(self.display_controller, dialog)
         controls.requested.connect(lambda settings, normalization:
@@ -1969,6 +1985,7 @@ class MainWindow(QMainWindow):
         controls.waveformRangeRequested.connect(lambda limit:
             self._guard(lambda: self.apply_waveform_range(limit), operation="waveform amplitude"))
         layout.addWidget(controls)
+        layout.addWidget(ReviewPageSettings(self, dialog))
         close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         close.rejected.connect(dialog.reject); layout.addWidget(close)
         dialog.show()
@@ -2665,7 +2682,7 @@ class MainWindow(QMainWindow):
         if self.selected_group == "pool":
             return self._prepare_pool_audition(reason=reason, use_exception=use_exception)
         batch = self.state["batch_review"]
-        payload = {"gap_seconds": self.gap.value(), "normalization": "per_item"}
+        payload = {"gap_seconds": self.gap.value(), "normalization": "per_item", "page_layout": self.review_page_layout()}
         review = self._review()
         group = next((x for x in (batch.get("organization") or {}).get("groups", []) if x["group_id"] == self.selected_group), None)
         if not group:
@@ -2721,11 +2738,12 @@ class MainWindow(QMainWindow):
         if self.project is not project or self.selected_group != "pool" or not self._close_coordinator.accepts_callback(generation):
             raise ValueError("The selected project or review changed. Select the pool again.")
         key = "desktop-pool-" + uuid.uuid4().hex
+        page_layout = self.review_page_layout()
         def prepare_round(_progress, _cancelled):
             return controller.prepare(project, generation=generation, idempotency_key=key,
                 reopen_reason=reason if refreeze or scope["requires_reopen_reason"] else "", refreeze=refreeze,
                 use_direct_exception=use_exception, exception_reason=reason if use_exception else "",
-                gap_seconds=gap, normalization=display["normalization"], empty_only=empty)
+                gap_seconds=gap, normalization=display["normalization"], empty_only=empty, page_layout=page_layout)
         def requested(result):
             self._review_preparation_requested(result)
             if result["empty_pool_skip"]:
@@ -2749,18 +2767,21 @@ class MainWindow(QMainWindow):
             raise ValueError("A matching clustering failure and an explicit exception reason are required.")
         gap = self.gap.value()
         display = self.display_controller.snapshot()
+        page_layout = self.review_page_layout()
         if family_review_conflicts(state, family_id):
             def prepare_preview(_progress, cancel):
                 return FamilyAuditionPreview.prepare(project, family_id, state, gap_seconds=gap,
-                    normalization=display["normalization"], settings=display["settings"], check_cancelled=cancel)
+                    normalization=display["normalization"], settings=display["settings"], check_cancelled=cancel,
+                    page_layout=page_layout)
 
             self._run("Prepare family listening pages", prepare_preview, self._install_audition_preview)
             return
         key = "desktop-family-" + uuid.uuid4().hex
         def prepare_round(_progress, _cancel):
             return controller.prepare(project, generation=generation, idempotency_key=key,
-                cluster_for_audition=True, reopen_reason=reason, use_direct_exception=use_exception,
-                exception_reason=reason if use_exception else "", gap_seconds=gap, normalization=display["normalization"])
+                reopen_reason=reason, use_direct_exception=use_exception,
+                exception_reason=reason if use_exception else "", gap_seconds=gap, normalization=display["normalization"],
+                page_layout=page_layout)
         self._run("Prepare family review", prepare_round, self._review_preparation_requested)
 
     def _install_audition_preview(self, preview):

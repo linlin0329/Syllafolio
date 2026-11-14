@@ -14,10 +14,22 @@ from .annotation_batch_acoustics import DISPLAY_DEFAULTS, NORMALIZATIONS, valida
 from .annotation_spectrogram import DEFAULTS, VERSION, render
 from .annotation_assistant_contracts import canonical_hash
 from .annotation_service import atomic_json
+from .annotation_page_layout import validate_page_layout
 
 PREFERENCES = "desktop_review_media.json"
 SCHEMA = "syllafolio-desktop-review-media-v1"
 _PREF_LOCK = threading.RLock()
+DEFAULT_REVIEW_PAGES = {"mode": "auto", "count": 10, "ms_per_pixel": None}
+
+
+def _review_page_preferences(value):
+    _require(isinstance(value, dict) and set(value) == set(DEFAULT_REVIEW_PAGES),
+             "MEDIA_PREFERENCE_INVALID", "Review page preferences contain unsupported fields.")
+    scale = value["ms_per_pixel"]
+    layout = validate_page_layout(dict(value, ms_per_pixel=5.0 if scale is None else scale,
+                                       plot_width_px=1, label_width_px=1))
+    return {"mode": layout["mode"], "count": layout["count"],
+            "ms_per_pixel": None if scale is None else layout["ms_per_pixel"]}
 
 
 class ReviewMediaError(ValueError):
@@ -126,6 +138,8 @@ class DisplayController:
         self.settings = dict(DISPLAY_DEFAULTS)
         self.normalization = "per_item"
         self._waveform_range = 0.0
+        self.review_pages = dict(DEFAULT_REVIEW_PAGES)
+        self.recommended_time_scale = 5.0
         self._preference_baselines = {}
         self.set(settings or {}, normalization)
         self._explicit_initial = settings is not None or normalization != "per_item"
@@ -168,16 +182,33 @@ class DisplayController:
             preferences = _preferences(project)
             display = preferences.get("display")
             waveform_range = _waveform_range(preferences.get("waveform_range", 0.0))
+            page_preferences = _review_page_preferences(preferences.get("review_pages", DEFAULT_REVIEW_PAGES))
+            durations = [row["duration_s"] for row in project.dataset.public_items()]
+            # Size shorter clips to about 60 logical pixels. Use the same scale across
+            # the project so a short tail group and a full group stay comparable.
+            recommended = float(np.clip(np.percentile(durations, 25) * 1000 / 60, .1, 5)) if durations else 5.0
             if display is not None:
                 _require(isinstance(display, dict) and set(display) == {"settings", "normalization"},
                          "MEDIA_PREFERENCE_INVALID", "Display preferences contain unsupported fields.")
                 self.set(display["settings"], display["normalization"])
             with self._lock:
                 self._waveform_range = waveform_range
+                self.review_pages = page_preferences
+                self.recommended_time_scale = round(recommended, 2)
         value = self.snapshot()
         self._preference_baselines[key] = {name: value[name] for name in ("settings", "normalization")}
         self._explicit_initial = False
         return self.snapshot()
+
+    def save_page_preferences(self, project, value):
+        pages = _review_page_preferences(value)
+        _save_preferences(project, {"review_pages": pages})
+        self.review_pages = pages
+
+    def page_layout(self, width, label_width, preferences=None):
+        pages = self.review_pages if preferences is None else preferences
+        return validate_page_layout(dict(pages, plot_width_px=width, label_width_px=label_width,
+                                         ms_per_pixel=pages["ms_per_pixel"] or self.recommended_time_scale))
 
     def save_preferences(self, project):
         value = self.snapshot()

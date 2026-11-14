@@ -23,6 +23,8 @@ from scipy.signal.windows import hann
 from .annotation_acoustics import (
     AcousticError, _cancel, _hash, _ids, _read_json, _require, _sha, _write_json,
 )
+from .annotation_page_layout import MAX_PAGE_ITEMS, page_capacity, page_slices, validate_page_layout
+from .annotation_family_acoustics import FAMILY_AUDITION_POLICY, FAMILY_ORDER_METHOD, family_similarity_order
 
 VERSION = "annotation-batch-acoustics-v1"
 DISPLAY_DEFAULTS = {"dynamic_range_db": 45, "window_samples": 512, "hop_samples": 96}
@@ -240,29 +242,52 @@ def _spectral_columns(samples, rate, params, frame_indices, check_cancelled):
     return selected, peak, count
 
 
+def _waveform_envelope(path, frame_count, columns, check_cancelled):
+    edges = np.linspace(0, frame_count, columns + 1, dtype=int)
+    extrema = np.empty((columns, 2), dtype=np.float32)
+    with sf.SoundFile(path) as stream:
+        for first in range(0, columns, 128):
+            _cancel(check_cancelled)
+            end = min(first + 128, columns)
+            start_frame = edges[first]
+            stream.seek(start_frame)
+            stop_frame = min(frame_count, max(edges[end], edges[end - 1] + 1))
+            block = stream.read(int(stop_frame - start_frame), dtype="float32")
+            _require(np.isfinite(block).all(), "INVALID_MEDIA", "Audition audio contains non-finite samples.")
+            for i in range(first, end):
+                a, b = edges[i] - start_frame, edges[i + 1] - start_frame
+                samples = block[a:max(a + 1, b)]
+                extrema[i] = samples.min(), samples.max()
+    return extrema
+
+
 def render_page_display(audio_path, slots, output_dir, settings=None,
-                        normalization="per_item", check_cancelled=None):
+                        normalization="per_item", check_cancelled=None, *, page_layout=None):
     """渲染整个拼接时间轴；不变更WAV。返回路径相对output_dir。"""
     params = validate_batch_display(settings)
     _require(normalization in NORMALIZATIONS, "NORMALIZATION", "Choose per-item or whole-page normalization explicitly.")
-    _require(isinstance(slots, list) and 1 <= len(slots) <= 10, "PAGE_SIZE", "An audition page must contain 1–10 slots.")
+    _require(isinstance(slots, list) and 1 <= len(slots) <= MAX_PAGE_ITEMS,
+             "PAGE_SIZE", f"An audition page must contain 1–{MAX_PAGE_ITEMS} slots.")
     source = Path(audio_path)
     before = _sha(source)
-    samples, rate = sf.read(source, dtype="float32", always_2d=False)
-    _require(samples.ndim == 1 and len(samples) and np.isfinite(samples).all(),
-             "INVALID_MEDIA", "Audition audio must be non-empty, finite and mono.")
-    _require(_sha(source) == before, "MEDIA_CHANGED", "The audition audio changed during display rendering.")
+    header = sf.info(source)
+    frame_count, rate = header.frames, header.samplerate
+    _require(header.channels == 1 and frame_count > 0, "INVALID_MEDIA", "Audition audio must be non-empty and mono.")
     prior_stop = 0
     for number, row in enumerate(slots, 1):
         start, stop = row.get("start_frame"), row.get("stop_frame")
-        _require(type(start) is int and type(stop) is int and prior_stop <= start < stop <= len(samples),
+        _require(type(start) is int and type(stop) is int and prior_stop <= start < stop <= frame_count,
                  "SLOT_BOUNDARY", "The page slot boundaries are incomplete or overlapping.")
         _require(row.get("slot") == number, "SLOT_BOUNDARY", "Page slot numbers must be consecutive, starting at 1.")
         prior_stop = stop
-    _require(slots[0]["start_frame"] == 0 and prior_stop == len(samples),
+    _require(slots[0]["start_frame"] == 0 and prior_stop == frame_count,
              "SLOT_BOUNDARY", "The page cannot contain unregistered audio before its first slot or after its last slot.")
-    duration = len(samples) / rate
-    width, height, wave_height = min(6000, max(2000, int(math.ceil(duration * 350)))), 500, 190
+    duration = frame_count / rate
+    pixels_per_second = 350
+    if page_layout is not None:
+        page_layout = validate_page_layout(page_layout)
+        pixels_per_second = max(pixels_per_second, 1000 / page_layout["ms_per_pixel"])
+    width, height, wave_height = min(6000, max(2000, int(math.ceil(duration * pixels_per_second)))), 500, 190
     left, right, top, bottom = 86, 24, 34, 64
     pw, ph = width - left - right, height - top - bottom
     x_times = (np.arange(pw) + .5) * duration / pw
@@ -273,7 +298,7 @@ def render_page_display(audio_path, slots, output_dir, settings=None,
     panels, peaks, incomplete = [], [], []
     for row in slots:
         _cancel(check_cancelled)
-        y = samples[row["start_frame"]:row["stop_frame"]]
+        y, _ = sf.read(source, start=row["start_frame"], stop=row["stop_frame"], dtype="float32")
         count = max(0, (len(y) - params["window_samples"]) // params["hop_samples"] + 1)
         offset = row["start_frame"] / rate
         t0 = offset + (params["window_samples"] - params["hop_samples"]) / (2 * rate)
@@ -310,20 +335,17 @@ def render_page_display(audio_path, slots, output_dir, settings=None,
     wave_ph = wave_height - wave_top - wave_bottom
     center = wave_top + wave_ph / 2
     wd.line((left, center, left + pw, center), fill="#d6dfe1")
-    amplitude = max(1.0, float(np.abs(samples).max(initial=0)))
-    edges = np.linspace(0, len(samples), pw + 1, dtype=int)
-    for i in range(pw):
-        a, b = int(edges[i]), max(int(edges[i]) + 1, int(edges[i + 1]))
-        segment = samples[a:min(b, len(samples))]
-        if len(segment):
-            wd.line((left + i, center - float(segment.max()) / amplitude * wave_ph / 2,
-                     left + i, center - float(segment.min()) / amplitude * wave_ph / 2), fill="#27777b")
+    extrema = _waveform_envelope(source, frame_count, pw, check_cancelled)
+    amplitude = max(1.0, float(np.abs(extrema).max()))
+    for i, (low, high) in enumerate(extrema):
+        wd.line((left + i, center - float(high) / amplitude * wave_ph / 2,
+                 left + i, center - float(low) / amplitude * wave_ph / 2), fill="#27777b")
     wd.text((left, 2), "Amplitude", font=small, fill="#24343b")
     for target, drawer, plot_top, plot_bottom in (
             (spectrum, draw, top, top + ph), (wave, wd, wave_top, wave_top + wave_ph)):
         for row in slots:
-            start = left + pw * row["start_frame"] / len(samples)
-            stop = left + pw * row["stop_frame"] / len(samples)
+            start = left + pw * row["start_frame"] / frame_count
+            stop = left + pw * row["stop_frame"] / frame_count
             drawer.line((start, plot_top, start, plot_bottom), fill="#a3bfc0", width=1)
             drawer.text(((start + stop) / 2, plot_top + 4), str(row["slot"]),
                         font=small, fill="#11636a", anchor="mt")
@@ -337,10 +359,12 @@ def render_page_display(audio_path, slots, output_dir, settings=None,
         draw.text((left + pw - 8, top + ph - 8), "Some slots: no complete STFT window",
                   font=small, fill="#9c571c", anchor="rb")
     _cancel(check_cancelled)
+    _require(_sha(source) == before, "MEDIA_CHANGED", "The audition audio changed during display rendering.")
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     identity = _hash({"version": VERSION, "audio_sha256": before, "slots": slots,
-                      "settings": params, "normalization": normalization})[:24]
+                      "settings": params, "normalization": normalization,
+                      **({"ms_per_pixel": page_layout["ms_per_pixel"]} if page_layout else {})})[:24]
     names = {"waveform_path": "waveform-" + identity + ".png",
              "spectrogram_path": "spectrogram-" + identity + ".png"}
     for key, img in (("waveform_path", wave), ("spectrogram_path", spectrum)):
@@ -363,22 +387,63 @@ def render_page_display(audio_path, slots, output_dir, settings=None,
     return dict(names, display=display, artifacts=artifacts, audio_sha256=before)
 
 
+def _write_page_audio(dataset, page_ids, audio, gap_frames, check_cancelled):
+    """Write one syllable at a time, verifying its round-trip PCM including gaps."""
+    rate = dataset.sample_rate_hz
+    silence = np.zeros(gap_frames, dtype="<f4")
+    expected = hashlib.sha256()
+    slots = []
+    with sf.SoundFile(audio, mode="x", channels=1, samplerate=rate, subtype="FLOAT") as stream:
+        for number, ident in enumerate(page_ids, 1):
+            _cancel(check_cancelled)
+            if number > 1:
+                stream.write(silence)
+                expected.update(silence)
+            samples, actual_rate, source = dataset.read_audio(ident)
+            _require(actual_rate == rate, "MIXED_SAMPLE_RATE", "Concatenation does not resample audio automatically.")
+            samples = np.asarray(samples, dtype="<f4", order="C")
+            offset = stream.tell()
+            stream.write(samples)
+            expected.update(samples)
+            stop = stream.tell()
+            row = dataset._items[ident]
+            slots.append({"slot": number, "item_id": ident, "start_frame": offset, "stop_frame": stop,
+                          "start_seconds": offset / rate, "stop_seconds": stop / rate,
+                          "source_clip_id": source["source_clip_id"],
+                          "source_frame_start": row["source_frame_start"],
+                          "source_frame_stop": row["source_frame_stop"], "sample_rate_hz": rate,
+                          "parent_audio_sha256": dataset._parents[row["source_clip_id"]]["sha256"]})
+    decoded = hashlib.sha256()
+    with sf.SoundFile(audio) as stream:
+        _require(stream.samplerate == rate and stream.frames == stop, "PCM_MISMATCH",
+                 "The decoded audition WAV has different frame timing.")
+        for block in stream.blocks(blocksize=65536, dtype="float32"):
+            _cancel(check_cancelled)
+            decoded.update(np.asarray(block, dtype="<f4", order="C"))
+    _require(decoded.digest() == expected.digest(), "PCM_MISMATCH",
+             "The decoded audition WAV does not match the original syllables and inserted silence.")
+    return slots
+
+
 def prepare_review(dataset, item_ids, output_dir, route, gap_seconds, normalization,
-                   display=None, check_cancelled=None):
-    """完整范围→可选真实局部聚类→每子簇最多10条保真拼接；失败不偷换算法。"""
+                   display=None, check_cancelled=None, *, page_layout=None):
+    """Prepare listening pages within the existing acoustic groups and frozen layout."""
     ids = dataset._select(item_ids, "item_ids", nonempty=True)
     ids = sorted(ids)
-    _require(route in {"direct", "cluster", "direct_exception", "family_cluster", "pool_cluster"}, "REVIEW_ROUTE", "Unknown audition organization route.")
+    _require(route in {"direct", "cluster", "direct_exception", "family_order", "family_cluster", "pool_cluster"}, "REVIEW_ROUTE", "Unknown audition organization route.")
     _require(type(gap_seconds) in {int, float} and math.isfinite(gap_seconds) and .05 <= gap_seconds <= 2,
              "SILENCE_GAP", "Explicitly set the inter-syllable silence to 0.05–2 seconds.")
     _require(normalization in NORMALIZATIONS, "NORMALIZATION", "Choose per-item or whole-page display normalization explicitly.")
     params = validate_batch_display(display)
+    if page_layout is not None:
+        page_layout = validate_page_layout(page_layout)
     _cancel(check_cancelled)
     out = Path(output_dir)
     _require(not out.exists(), "OUTPUT_EXISTS", "The audition output already exists; use a new organization version.")
     out.mkdir(parents=True)
     started = time.monotonic()
     cluster_seconds = 0.0
+    order_seconds = 0.0
     local = None
     try:
         if route in {"cluster", "family_cluster", "pool_cluster"}:
@@ -407,6 +472,11 @@ def prepare_review(dataset, item_ids, output_dir, route, gap_seconds, normalizat
                 if route == "cluster" or len(ids) >= dataset.preset["local"]["minimum_recluster_rows"]:
                     exc.batch_failure_phase = "clustering"
                 raise
+        elif route == "family_order":
+            t0 = time.monotonic()
+            order = family_similarity_order(dataset, ids, check_cancelled)
+            order_seconds = time.monotonic() - t0
+            buckets = [("ordered", order)]
         else:
             buckets = [("direct", ids)]
         pages, artifacts = [], {}
@@ -414,48 +484,28 @@ def prepare_review(dataset, item_ids, output_dir, route, gap_seconds, normalizat
         gap_frames = int(round(float(gap_seconds) * rate))
         _require(gap_frames > 0, "SILENCE_GAP", "The silence is shorter than one sample frame.")
         for subcluster_id, members in buckets:
-            for start in range(0, len(members), 10):
+            frames = [dataset._items[i]["source_frame_stop"] - dataset._items[i]["source_frame_start"] for i in members]
+            for selection in page_slices(frames, rate, gap_frames, page_layout):
                 _cancel(check_cancelled)
-                page_ids = members[start:start + 10]
+                page_ids = members[selection]
                 page_id = f"page-{len(pages) + 1:04d}"
                 folder = out / page_id
                 folder.mkdir()
-                pieces, slots, offset = [], [], 0
-                for number, ident in enumerate(page_ids, 1):
-                    _cancel(check_cancelled)
-                    samples, actual_rate, source = dataset.read_audio(ident)
-                    _require(actual_rate == rate, "MIXED_SAMPLE_RATE", "Concatenation does not resample audio automatically.")
-                    stop = offset + len(samples)
-                    row = dataset._items[ident]
-                    slots.append({"slot": number, "item_id": ident,
-                                  "start_frame": offset, "stop_frame": stop,
-                                  "start_seconds": offset / rate, "stop_seconds": stop / rate,
-                                  "source_clip_id": source["source_clip_id"],
-                                  "source_frame_start": row["source_frame_start"],
-                                  "source_frame_stop": row["source_frame_stop"],
-                                  "sample_rate_hz": rate,
-                                  "parent_audio_sha256": dataset._parents[row["source_clip_id"]]["sha256"]})
-                    pieces.append(samples)
-                    offset = stop
-                    if number < len(page_ids):
-                        pieces.append(np.zeros(gap_frames, dtype=np.float32))
-                        offset += gap_frames
-                pcm = np.concatenate(pieces)
                 audio = folder / "review.wav"
-                sf.write(audio, pcm, rate, subtype="FLOAT")
-                decoded, decoded_rate = sf.read(audio, dtype="float32")
-                _require(decoded_rate == rate and np.array_equal(decoded, pcm),
-                         "PCM_MISMATCH", "The decoded audition WAV does not match the original syllables and inserted silence.")
+                slots = _write_page_audio(dataset, page_ids, audio, gap_frames, check_cancelled)
+                frame_count = slots[-1]["stop_frame"]
                 rendered = render_page_display(audio, slots, folder, params, normalization,
-                                               check_cancelled=check_cancelled)
+                                               check_cancelled=check_cancelled, page_layout=page_layout)
                 page = {"page_id": page_id, "subcluster_id": subcluster_id, "item_ids": page_ids,
-                        "slots": slots, "sample_rate_hz": rate, "duration_s": len(pcm) / rate,
-                        "duration_seconds": len(pcm) / rate, "frame_count": len(pcm),
+                        "slots": slots, "sample_rate_hz": rate, "duration_s": frame_count / rate,
+                        "duration_seconds": frame_count / rate, "frame_count": frame_count,
                         "audio_path": f"{page_id}/review.wav", "audio_sha256": _sha(audio),
                         "waveform_path": f"{page_id}/" + rendered["waveform_path"],
                         "spectrogram_path": f"{page_id}/" + rendered["spectrogram_path"],
                         "display": rendered["display"]}
                 pages.append(page)
+                if page_layout is not None:
+                    page["page_layout"] = page_layout.copy()
                 for path in (page["audio_path"], page["waveform_path"], page["spectrogram_path"]):
                     artifacts[path] = {"path": path, "sha256": _sha(out / path)}
                 _write_json(folder / "page.json", page)
@@ -468,7 +518,9 @@ def prepare_review(dataset, item_ids, output_dir, route, gap_seconds, normalizat
                   "input_versions": copy.deepcopy(dataset.input_versions), "pages": pages,
                   "local_result_id": local["result_id"] if local else None,
                   "local_result_path": "local/result.json" if local else None,
-                  "parameters": {"page_size_max": 10, "gap_seconds_requested": float(gap_seconds),
+                  "parameters": {"page_size_max": page_capacity(page_layout),
+                                 **({"page_layout": page_layout} if page_layout is not None else {}),
+                                 "gap_seconds_requested": float(gap_seconds),
                                  "gap_frames": gap_frames, "gap_seconds_actual": gap_frames / rate,
                                  "normalization": normalization, "display": params,
                                  "ordering": "local_fixed_linkage_order_within_subcluster" if local else "stable_item_id",
@@ -485,11 +537,19 @@ def prepare_review(dataset, item_ids, output_dir, route, gap_seconds, normalizat
                   "provenance": {"source_code_sha256": _sha(__file__),
                                  "acoustic_code_sha256": _sha(Path(__file__).with_name("annotation_acoustics.py"))}}
         _cancel(check_cancelled)
+        if route == "family_order":
+            result["parameters"]["ordering"] = FAMILY_ORDER_METHOD
+            result["timing"]["ordering_seconds"] = order_seconds
+            result["family_ordering"] = {
+                "policy_version": FAMILY_AUDITION_POLICY, "method": FAMILY_ORDER_METHOD,
+                "ordered_ids": order, "refit_representation": False, "is_human_classification": False,
+            }
+            result["provenance"]["family_acoustic_code_sha256"] = _sha(Path(__file__).with_name("annotation_family_acoustics.py"))
         if route in {"family_cluster", "pool_cluster"}:
-            from .annotation_family_acoustics import FAMILY_CLUSTER_POLICY, POOL_CLUSTER_POLICY
+            from .annotation_family_acoustics import POOL_CLUSTER_POLICY
             metadata_key = "pool_clustering" if route == "pool_cluster" else "family_clustering"
             result[metadata_key] = copy.deepcopy(local.get(metadata_key, {
-                "policy_version": POOL_CLUSTER_POLICY if route == "pool_cluster" else FAMILY_CLUSTER_POLICY,
+                "policy_version": POOL_CLUSTER_POLICY if route == "pool_cluster" else FAMILY_AUDITION_POLICY,
                 "method": "existing_fixed_local_recluster",
                 "member_count": len(ids), "fixed_local_minimum": dataset.preset["local"]["minimum_recluster_rows"],
                 "group_count": len(buckets), "is_human_classification": False,

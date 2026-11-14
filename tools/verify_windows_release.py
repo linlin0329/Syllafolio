@@ -60,7 +60,7 @@ def exercise(release, evidence, work):
     import winreg
 
     work.mkdir(exist_ok=False)
-    version = "1.0.1"
+    version = "1.0.2"
     archive = release / "Syllafolio-Windows-x64.zip"
     setup = release / f"Syllafolio-Setup-{version}-x64.exe"
     portable = read_json(evidence / "portable.json")

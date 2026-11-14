@@ -9,7 +9,7 @@ from PIL import Image
 import pyqtgraph as pg
 from PySide6.QtCore import QIODevice, QObject, QRectF, QTimer, Qt, Signal
 from PySide6.QtMultimedia import QAudio, QAudioFormat, QAudioSink, QMediaDevices
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QPushButton, QScrollBar, QVBoxLayout, QWidget
 
 
 def _page_view_duration(page, duration, review_pages, gap_seconds, *, scope_clusters=False):
@@ -43,6 +43,41 @@ def waveform_half_range(peak, fixed_range):
     return 1.1 * peak if peak > 0 else 1.0
 
 
+_MAX_WAVEFORM_POINTS = 1_000_000
+
+
+def _waveform_points(samples, rate):
+    """Bound the plotted curve, retaining both extremes at their original times."""
+    frames = len(samples)
+    if frames <= _MAX_WAVEFORM_POINTS:
+        times = np.arange(frames, dtype=np.float64)
+        times /= rate
+        return times, samples
+
+    max_buckets = (_MAX_WAVEFORM_POINTS - 2) // 2
+    step = math.ceil(frames / max_buckets)
+    full, tail = divmod(frames, step)
+    indices = np.empty(2 + 2 * (full + bool(tail)), dtype=np.intp)
+    indices[0], indices[-1] = 0, frames - 1
+    # Also bound any contiguous copies NumPy needs for strided input arrays.
+    buckets_per_block = max(1, 262144 // step)
+    for first in range(0, full, buckets_per_block):
+        end = min(first + buckets_per_block, full)
+        block = samples[first * step:end * step].reshape(-1, step)
+        starts = np.arange(first, end, dtype=np.intp) * step
+        low, high = block.argmin(axis=1), block.argmax(axis=1)
+        positions = indices[1 + 2 * first:1 + 2 * end].reshape(-1, 2)
+        positions[:, 0] = starts + np.minimum(low, high)
+        positions[:, 1] = starts + np.maximum(low, high)
+    if tail:
+        last = samples[full * step:]
+        lo, hi = sorted((last.argmin(), last.argmax()))
+        indices[-3:-1] = full * step + lo, full * step + hi
+    times = indices.astype(np.float64)
+    times /= rate
+    return times, samples[indices]
+
+
 class AuditionCanvas(QWidget):
     """Linked native plots with the existing renderer's exact spectrogram pixels."""
 
@@ -74,12 +109,33 @@ class AuditionCanvas(QWidget):
         layout.setSpacing(2)
         layout.addWidget(self.wave, 1)
         layout.addWidget(self.spec, 3)
+        self._navigation = QWidget(self)
+        navigation = QHBoxLayout(self._navigation)
+        navigation.setContentsMargins(0, 0, 0, 0)
+        self.time_scroll = QScrollBar(Qt.Orientation.Horizontal)
+        self.time_scroll.setAccessibleName("Scroll through audition page")
+        self.entire_page = QPushButton("Show entire page")
+        self.entire_page.setAutoDefault(False)
+        self.entire_page.setToolTip("Temporarily show the whole page. Fit restores the review time scale.")
+        navigation.addWidget(self.time_scroll, 1)
+        navigation.addWidget(self.entire_page)
+        layout.addWidget(self._navigation)
+        self.time_scroll.valueChanged.connect(self._scroll_time)
+        self.entire_page.clicked.connect(self.show_entire_page)
         self.wave.scene().sigMouseClicked.connect(lambda event: self._clicked(self.wave, event))
         self.spec.scene().sigMouseClicked.connect(lambda event: self._clicked(self.spec, event))
         self._waveform_range = 0.0
         self.clear()
+        self.spec.getViewBox().sigResized.connect(self._resize_time_axis)
+        self.spec.getViewBox().sigXRangeChanged.connect(self._update_navigation)
+        for plot in (self.wave, self.spec):
+            plot.getViewBox().sigRangeChangedManually.connect(self._manual_range_changed)
 
     def clear(self):
+        self._ms_per_pixel = None
+        self._active_seconds_per_pixel = None
+        self._last_plot_width = None
+        self._navigation.hide()
         self.wave.clear()
         self.spec.clear()
         self.slots = []
@@ -90,6 +146,7 @@ class AuditionCanvas(QWidget):
         self.selected_item_id = None
         self.selected_item_ids = ()
         self._fit_bounds = QRectF(0, 0, 1, 16)
+        self.spec.setLimits(xMin=0, xMax=1, yMin=0, yMax=16)
         self.wave.setXRange(0, 1, padding=0)
         self.fit_page()
 
@@ -97,13 +154,15 @@ class AuditionCanvas(QWidget):
                  scope_clusters=False):
         self.clear()
         y = np.asarray(samples, dtype=np.float32)
-        if y.ndim != 1 or not len(y) or not np.isfinite(y).all():
+        if y.ndim != 1 or not len(y):
+            raise ValueError("The audition page must contain finite mono PCM.")
+        lo, hi = float(y.min()), float(y.max())
+        if not (math.isfinite(lo) and math.isfinite(hi)):
             raise ValueError("The audition page must contain finite mono PCM.")
         self.slots = list(page["slots"])
         self.duration = len(y) / rate
-        self._waveform_peak = float(np.max(np.abs(y)))
-        curve = self.wave.plot(np.arange(len(y), dtype=np.float64) / rate, y,
-                               pen=pg.mkPen("#286e76", width=1))
+        self._waveform_peak = max(-lo, hi)
+        curve = self.wave.plot(*_waveform_points(y, rate), pen=pg.mkPen("#286e76", width=1))
         curve.setDownsampling(auto=True, method="peak")
         curve.setClipToView(True)
         # Crop only the graph domain. The shared service generated these pixels
@@ -121,8 +180,12 @@ class AuditionCanvas(QWidget):
         raster = pg.ImageItem(np.ascontiguousarray(cropped[::-1]), axisOrder="row-major")
         frequency_khz = min(16.0, rate / 2000)
         raster.setRect(QRectF(0, 0, self.duration, frequency_khz))
-        view_duration = _page_view_duration(page, self.duration, review_pages, round(gap_seconds * rate) / rate,
-                                            scope_clusters=scope_clusters)
+        self._ms_per_pixel = page.get("page_layout", {}).get("ms_per_pixel")
+        if self._ms_per_pixel is None:
+            view_duration = _page_view_duration(page, self.duration, review_pages, round(gap_seconds * rate) / rate,
+                                                scope_clusters=scope_clusters)
+        else:
+            view_duration = self.drawable_width_px() * self._ms_per_pixel / 1000
         self._fit_bounds = QRectF(0, 0, view_duration, frequency_khz)
         self.spec.addItem(raster)
         for plot in (self.wave, self.spec):
@@ -140,7 +203,7 @@ class AuditionCanvas(QWidget):
                 line = pg.InfiniteLine(slot["start_seconds"], angle=90,
                                        pen=pg.mkPen("#b9cccf", width=.7))
                 plot.addItem(line)
-        self.spec.setLimits(xMin=0, xMax=view_duration, yMin=0, yMax=frequency_khz)
+        self.spec.setLimits(xMin=0, xMax=max(self.duration, view_duration), yMin=0, yMax=frequency_khz)
         self.fit_page()
 
     def set_waveform_range(self, fixed_range):
@@ -162,10 +225,75 @@ class AuditionCanvas(QWidget):
     def set_position(self, seconds):
         for cursor in self._cursor_lines:
             cursor.setValue(float(seconds))
+        if self._ms_per_pixel is not None:
+            left, right = self.spec.getViewBox().viewRange()[0]
+            if seconds < left or seconds > right:
+                span = right - left
+                self._set_time_window(seconds - .1 * span, span)
 
     def fit_page(self):
+        if self._ms_per_pixel is not None:
+            self._active_seconds_per_pixel = self._ms_per_pixel / 1000
+            self._last_plot_width = self.drawable_width_px()
+            span = self._last_plot_width * self._active_seconds_per_pixel
+            self._fit_bounds.setWidth(span)
+            self.spec.setLimits(xMax=max(self.duration, span))
         self.spec.setRange(rect=self._fit_bounds, padding=0)
         self.set_waveform_range(self._waveform_range)
+        self._update_navigation()
+
+    def drawable_width_px(self):
+        """Width used by the ViewBox time transform, in Qt logical pixels."""
+        return max(1.0, self.spec.getViewBox().rect().width())
+
+    def _set_time_window(self, left, span):
+        left = min(max(0.0, left), max(0.0, self.duration - span))
+        self.spec.setXRange(left, left + span, padding=0)
+
+    def _resize_time_axis(self):
+        width = self.drawable_width_px()
+        if self._ms_per_pixel is None or width == self._last_plot_width:
+            return
+        self._last_plot_width = width
+        left = self.spec.getViewBox().viewRange()[0][0]
+        self._fit_bounds.setWidth(width * self._ms_per_pixel / 1000)
+        span = width * self._active_seconds_per_pixel if self._active_seconds_per_pixel else self.duration
+        self.spec.setLimits(xMax=max(self.duration, self._fit_bounds.width(), span))
+        self._set_time_window(left, span)
+        self._update_navigation()
+
+    def _manual_range_changed(self, axes):
+        if self._ms_per_pixel is not None and axes[0]:
+            left, right = self.spec.getViewBox().viewRange()[0]
+            self._active_seconds_per_pixel = (right - left) / self.drawable_width_px()
+
+    def show_entire_page(self):
+        if self._ms_per_pixel is not None:
+            self._active_seconds_per_pixel = None
+            self._set_time_window(0, self.duration)
+
+    def _update_navigation(self):
+        if self._ms_per_pixel is None:
+            return
+        left, right = self.spec.getViewBox().viewRange()[0]
+        span = right - left
+        scrollable = max(0.0, self.duration - span)
+        show = scrollable > 1e-8 or self.duration > self._fit_bounds.width() + 1e-8
+        blocked = self.time_scroll.blockSignals(True)
+        try:
+            self.time_scroll.setRange(0, math.ceil(scrollable * 1000))
+            self.time_scroll.setPageStep(max(1, round(span * 1000)))
+            self.time_scroll.setSingleStep(max(1, round(span * 100)))
+            self.time_scroll.setValue(round(left * 1000))
+        finally:
+            self.time_scroll.blockSignals(blocked)
+        self.time_scroll.setEnabled(scrollable > 1e-8)
+        self.entire_page.setEnabled(scrollable > 1e-8)
+        self._navigation.setVisible(show)
+
+    def _scroll_time(self, millis):
+        left, right = self.spec.getViewBox().viewRange()[0]
+        self._set_time_window(millis / 1000, right - left)
 
     def _clicked(self, plot, event):
         if event.button() != Qt.MouseButton.LeftButton:

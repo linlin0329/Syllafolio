@@ -1,6 +1,6 @@
 # Syllafolio user guide
 
-Version **1.0.1** uses the supplied application source and hash-locked dependencies. It starts with an empty workspace and includes no business samples, demonstration projects or acceptance datasets. Build evidence and actual Windows acceptance are separate. Audibility, human type criteria and scientific validity require the actual user to check them.
+Version **1.0.2** uses the supplied application source and hash-locked dependencies. It starts with an empty workspace and includes no business samples, demonstration projects or acceptance datasets. Build evidence and actual Windows acceptance are separate. Audibility, human type criteria and scientific validity require the actual user to check them.
 
 ## Start and use your own project
 
@@ -48,7 +48,13 @@ Right-click **Candidate Groups → Open candidate workspace…**. Preview first,
 
 Expand Candidate Groups, choose a group and click **Prepare group**, then select a page. Select a human family under **Family reviews** and prepare it in the same way. Right-click to create a family; Rename or F2 changes its display name. Continue an existing valid round when available. When items overlap another formal round, distinguish the read-only listening preview from an editable review.
 
+For a new round under **Family reviews → Prepare group**, families of 1–10 syllables play in stable ID order. For 11–30 syllables, the application orders all members by acoustic similarity and divides that sequence into consecutive pages. For 31 or more, it clusters the family first and prepares pages within each cluster, retaining unclustered syllables for review. All three use the time scale and automatic or fixed page settings below. Changing the window size can change pagination for a new round; the family's listening order and acoustic groups depend on its members.
+
 **Play** plays the current range; **Loop** repeats it. The active button becomes Pause. With no selection, play the page; with one item, play that item; use Ctrl to add or remove items from a selection. Multiple items play in page order. Selection or page changes stop the previous stream. **View → Display settings…** sets waveform Auto or a fixed symmetric range and shared spectrogram settings. The defaults are 45 dB, Hann 512 and hop 96. Display changes do not change PCM or assignments.
+
+In **View → Display settings…**, choose a **Time scale** for new review pages, in milliseconds per logical pixel. A smaller value makes a syllable wider. At 5 ms/pixel, for example, a 300 ms syllable spans 60 pixels on any page of the round. **Automatic** pagination fits whole syllables, their silent gaps and their labels to the available width when you prepare a group. **Fixed count** sets the maximum number per page (1–40).
+
+Apply the settings before preparing a new round. The round saves its pages and scale so you can return to the same syllables and drafts. A short page leaves blank space after the audio. Use **Fit** to return to the round's scale after zooming. When the audio extends past the visible area, scroll horizontally or choose **Show entire page** for an overview. Rounds prepared with an earlier version retain their original pages and viewing behavior.
 
 Choose the current human family for review. A star marks a pending decision, not a saved judgment. Select one item to change Outcome. Other family requires an existing target; New family requires a shared basis. Pool/discard decisions use an explicit reason category. Routine notes are optional. **Save and next** saves one item. The adjacent menu also offers Save item. **Save page** submits the page's eligible pending items. Listening, selecting or restoring a draft does not submit a decision. Directed review has additional evidence and confirmation requirements.
 

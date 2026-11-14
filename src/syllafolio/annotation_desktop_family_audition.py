@@ -11,6 +11,7 @@ import soundfile as sf
 
 from .annotation_acoustics import _cancel, _sha
 from .annotation_assistant_contracts import canonical_hash
+from .annotation_family_acoustics import family_audition_route
 from .annotation_batch_acoustics import NORMALIZATIONS, prepare_review, render_page_display, validate_batch_display
 from .annotation_batch_review import (
     ACTIVE, _effective_active_reviews, active_pool, blank, current_organization, current_pool_review,
@@ -96,7 +97,6 @@ def _binding(state, family_id):
 class FamilyAuditionPreview:
     """同步worker API；matches不读库，close不等待在途绘图锁。"""
 
-    _route = "family_cluster"
     _temporary_prefix = "sfa-"
     _error_prefix = "FAMILY"
     _typed_normalization = False
@@ -122,10 +122,11 @@ class FamilyAuditionPreview:
         self.profile = {}
 
     @classmethod
-    def prepare(cls, project, family_id, state, *, gap_seconds, normalization, settings, check_cancelled=None):
+    def prepare(cls, project, family_id, state, *, gap_seconds, normalization, settings, check_cancelled=None, page_layout=None):
         binding = _binding(state, family_id)
-        return cls._prepare_media(project, family_id, binding, state, gap_seconds=gap_seconds,
-                                  normalization=normalization, settings=settings, check_cancelled=check_cancelled)
+        route = family_audition_route(len(binding["member_ids"]))
+        return cls._prepare_media(project, family_id, binding, state, route=route, gap_seconds=gap_seconds,
+                                  normalization=normalization, settings=settings, check_cancelled=check_cancelled, page_layout=page_layout)
 
     @classmethod
     def _new_instance(cls, project, family_id, binding, temporary):
@@ -136,7 +137,7 @@ class FamilyAuditionPreview:
         return binding["member_ids"]
 
     @classmethod
-    def _prepare_media(cls, project, family_id, binding, state, *, gap_seconds, normalization, settings, check_cancelled):
+    def _prepare_media(cls, project, family_id, binding, state, *, route, gap_seconds, normalization, settings, check_cancelled, page_layout=None):
         """两类共用身份、真实媒体生成、完整覆盖、缓存发布及失败清理。"""
         _require(binding["project_id"] == project.metadata["project_id"]
                  and binding["run_id"] == project.service.run_id
@@ -154,8 +155,8 @@ class FamilyAuditionPreview:
         try:
             ids = cls._bound_item_ids(binding)
             result = prepare_review(project.dataset, ids, instance._media,
-                                    cls._route, gap_seconds, normalization, display=params,
-                                    check_cancelled=instance._checker(check_cancelled))
+                                    route, gap_seconds, normalization, display=params,
+                                    check_cancelled=instance._checker(check_cancelled), page_layout=page_layout)
             instance._current(check_cancelled)
             ordered = [ident for page in result["pages"] for ident in page["item_ids"]]
             _require(len(ordered) == len(set(ordered)) == len(ids) and sorted(ordered) == ids,
@@ -181,7 +182,7 @@ class FamilyAuditionPreview:
                 "closed": False, "read_only": True, "audition_only": True, "compact_submit_allowed": False,
                 "family_id": self.family_id, "family_title": family_title(state, self.family_id),
                 "item_ids": list(binding["member_ids"]), "ordered_item_ids": ordered,
-                "pages": copy.deepcopy(result["pages"]), "route": "family_cluster",
+                "pages": copy.deepcopy(result["pages"]), "route": result["route"],
                 "gap_seconds": float(gap_seconds), "normalization": normalization,
                 "display_settings": params, "review_blockers": family_review_conflicts(state, self.family_id),
                 "conflict_review_ids": [row["review_id"] for row in binding["conflicts"]],
@@ -189,7 +190,7 @@ class FamilyAuditionPreview:
                 "family_definition_fingerprint": binding["definition_fingerprint"],
                 "input_fingerprint": binding["input_fingerprint"],
                 "read_only_reason": "Audition only while overlapping reviews remain open; no decisions are saved here.",
-                "result": {k: copy.deepcopy(result[k]) for k in ("parameters", "coverage", "family_clustering") if k in result}}
+                "result": {k: copy.deepcopy(result[k]) for k in ("parameters", "coverage", "family_ordering", "family_clustering") if k in result}}
 
     def matches(self, state):
         """只比较已采样身份/冻结成员/定义/仍存在的同一组冲突；无服务调用。"""
@@ -253,7 +254,7 @@ class FamilyAuditionPreview:
             if shown is None:
                 folder = self._root / ("d-" + uuid.uuid4().hex[:10])
                 rendered = render_page_display(audio, page["slots"], folder, params, normalization,
-                                               check_cancelled=self._checker(check_cancelled))
+                                               check_cancelled=self._checker(check_cancelled), page_layout=page.get("page_layout"))
                 shown = {"display": rendered["display"]}
                 for name in ("spectrogram", "waveform"):
                     relative = rendered[name + "_path"]
@@ -373,7 +374,6 @@ def _pool_binding(state):
 class PoolAuditionPreview(FamilyAuditionPreview):
     """整个当前池的临时预听；正式pool_cluster仍由原服务守卫独立管理。"""
 
-    _route = "pool_cluster"
     _temporary_prefix = "spa-"
     _error_prefix = "POOL"
     _typed_normalization = True
@@ -385,10 +385,10 @@ class PoolAuditionPreview(FamilyAuditionPreview):
         self.review_id = "pool-audition-" + uuid.uuid4().hex
 
     @classmethod
-    def prepare(cls, project, state, *, gap_seconds, normalization, settings, check_cancelled=None):
+    def prepare(cls, project, state, *, gap_seconds, normalization, settings, check_cancelled=None, page_layout=None):
         binding = _pool_binding(state)
-        return cls._prepare_media(project, None, binding, state, gap_seconds=gap_seconds,
-                                  normalization=normalization, settings=settings, check_cancelled=check_cancelled)
+        return cls._prepare_media(project, None, binding, state, route="pool_cluster", gap_seconds=gap_seconds,
+                                  normalization=normalization, settings=settings, check_cancelled=check_cancelled, page_layout=page_layout)
 
     @classmethod
     def _new_instance(cls, project, family_id, binding, temporary):

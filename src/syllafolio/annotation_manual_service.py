@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 
 from .annotation_assistant_contracts import canonical_hash, require
+from .annotation_acoustics import _sha
 from .annotation_manual_protocol import (
     ManualAnnotationStateStore, REVIEW_CHECKS, COMPLETION_CHECKS, completion_report, item_projection,
     issue_projection,
@@ -301,9 +302,11 @@ class ManualAnnotationService(AnnotationService):
             require(page is not None, "BATCH_PAGE_NOT_FOUND", 'This audition page does not belong to the current round.')
             audio = self.media_path(page["audio_url"].rsplit("/", 1)[1])
             ident = canonical_hash({"input": self.dataset.input_fingerprint,
-                                    "audio": hashlib.sha256(audio.read_bytes()).hexdigest(),
+                                    "audio": _sha(audio),
                                     "slots": page["slots"], "settings": settings,
-                                    "normalization": normalization})
+                                    "normalization": normalization,
+                                    **({"ms_per_pixel": page["page_layout"]["ms_per_pixel"]}
+                                       if "page_layout" in page else {})})
             folder = self.work_dir / "batch_display" / ident
             receipt = folder / "display.json"
             if receipt.is_file():
@@ -312,7 +315,8 @@ class ManualAnnotationService(AnnotationService):
                 # 部分绘图失败也保留原文件；重试使用独立子目录，不覆盖已生成媒体。
                 attempt = uuid.uuid4().hex
                 result = render_page_display(audio, page["slots"], folder / attempt,
-                                             settings=settings, normalization=normalization)
+                                             settings=settings, normalization=normalization,
+                                             page_layout=page.get("page_layout"))
                 result["artifacts"] = {attempt + "/" + name: dict(row, path=attempt + "/" + row["path"])
                                        for name, row in result["artifacts"].items()}
                 for field in ("waveform_path", "spectrogram_path"):

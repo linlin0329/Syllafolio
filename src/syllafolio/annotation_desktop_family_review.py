@@ -1,6 +1,7 @@
 """人工family入口：完整当前成员、显式范围和共同准备事务；不启动定向复核。"""
 from __future__ import annotations
 from .annotation_english import system_fields, system_text, system_error
+from .annotation_family_acoustics import family_audition_route
 
 import copy
 import json
@@ -10,6 +11,13 @@ import uuid
 
 ACTIVE = {"queued", "running", "cancel_requested"}
 DEFAULT_PURPOSE = "Review all current members against this human-defined family's current diagnostic criteria."
+FAMILY_PREPARATION_LABELS = {
+    "direct": "Stable ID order",
+    "family_order": "Acoustic similarity order, continuous pages",
+    "family_cluster": "Within-family clustering, pages by cluster",
+    "cluster": "Within-family clustering, pages by cluster",
+    "direct_exception": "Direct audition after a documented exception",
+}
 
 
 class FamilyReviewError(ValueError):
@@ -47,7 +55,7 @@ def project_view(project, snapshot=None, *, family_id=None, reference_ids=(), vi
         continuing = bool(current_review and not directed and not review.get("closed") and not review.get("scope_stale")
                           and review.get("status") in ACTIVE | {"ready"})
         targets = list(review["item_ids"]) if continuing else current
-        route = review.get("route") if continuing else "direct" if len(current) <= 30 else "cluster"
+        route = review.get("route") if continuing else family_audition_route(len(current))
         all_ids = {row["item_id"] for row in state.get("items", [])}
         references = sorted(set(reference_ids))
         _require(all(isinstance(item, str) for item in references) and set(references) <= all_ids,
@@ -60,7 +68,7 @@ def project_view(project, snapshot=None, *, family_id=None, reference_ids=(), vi
             "message": "A matching real clustering failure for the current complete scope is required."}))
         scope = {"family_id": family_id, "title": family.get("title", family_id),
             "all_current_member_ids": current, "target_ids": targets,
-            "preparation_item_ids": targets, "fit_ids": targets if route == "cluster" else [],
+            "preparation_item_ids": targets, "fit_ids": targets if route in {"family_cluster", "cluster"} and len(targets) > 1 else [],
             "read_only_reference_ids": readonly, "reference_target_overlap_ids": overlap,
             "eligible_change_ids": targets, "visible_item_ids": visible,
             "view_filter_affects_fit": False, "route": route, "purpose": DEFAULT_PURPOSE,
@@ -134,7 +142,7 @@ class FamilyReviewController:
 
     def prepare(self, project, *, generation, idempotency_key, purpose="", reopen_reason="",
                 use_direct_exception=False, exception_reason="", gap_seconds=.4, normalization="per_item",
-                cluster_for_audition=False):
+                cluster_for_audition=False, page_layout=None):
         _require(isinstance(idempotency_key, str) and 0 < len(idempotency_key) <= 160,
                  "IDEMPOTENCY_REQUIRED", "Preparation needs an explicit request key.")
         _require(all(isinstance(text, str) for text in (purpose, reopen_reason, exception_reason)),
@@ -142,7 +150,8 @@ class FamilyReviewController:
         _require(type(use_direct_exception) is bool, "FAMILY_EXCEPTION", "Direct-exception selection must be explicit.")
         intent = {"purpose": purpose.strip() or DEFAULT_PURPOSE, "reopen_reason": reopen_reason.strip(),
                   "use_direct_exception": use_direct_exception, "exception_reason": exception_reason.strip(),
-                  "gap_seconds": gap_seconds, "normalization": normalization, "cluster_for_audition": cluster_for_audition}
+                  "gap_seconds": gap_seconds, "normalization": normalization, "cluster_for_audition": cluster_for_audition,
+                  "page_layout": page_layout}
         with project.service._lock:
             with self._lock:
                 _require(self._selected is not None, "FAMILY_SCOPE_REQUIRED", "Select and inspect the complete current family scope first.")
@@ -178,13 +187,12 @@ class FamilyReviewController:
                 _require(not current["empty"], "BATCH_FAMILY_EMPTY", "This family has no current members; no empty round will be created.")
                 _require(not current["requires_reopen_reason"] or bool(intent["reopen_reason"]),
                          "FAMILY_REOPEN_REASON", "State why the changed or previously reviewed current scope needs a new round.")
-                if cluster_for_audition and not use_direct_exception:
-                    current = dict(current, route="family_cluster",
-                                   fit_ids=current["target_ids"] if len(current["target_ids"]) > 1 else [])
                 payload = {"family_id": current["family_id"], "expected_member_fingerprint": current["member_fingerprint"],
                            "expected_definition_fingerprint": current["definition_fingerprint"], "reason": intent["purpose"],
                            "route": "direct_exception" if use_direct_exception else current["route"],
                            "gap_seconds": gap_seconds, "normalization": normalization, "review_origin": "family_recheck"}
+                if page_layout is not None:
+                    payload["page_layout"] = page_layout
                 if intent["reopen_reason"]:
                     payload["reopen_reason"] = intent["reopen_reason"]
                 if use_direct_exception:
@@ -339,10 +347,10 @@ class FamilyReviewDialog(QDialog):
         if selected.get("invalid_reason"):
             self.message.setText(selected["invalid_reason"])
         elif scope:
-            self.message.setText(f"{len(scope['target_ids'])} complete targets · {len(scope['fit_ids'])} fitted · "
-                f"{len(scope['read_only_reference_ids'])} external read-only references · route {scope['route']}. " +
-                ("Continue the existing valid frozen round; opening it does not recompute." if scope["can_continue"] else
-                 system_text(scope["direct_exception"].get("message", "Inspect this complete scope before preparing."))))
+            label = FAMILY_PREPARATION_LABELS.get(scope["route"], scope["route"])
+            self.message.setText(f"{len(scope['target_ids'])} syllables · {label}. " +
+                ("Continue the prepared pages." if scope["can_continue"] else
+                 f"{len(scope['read_only_reference_ids'])} external read-only references."))
 
     def refresh(self):
         if not self._current():
@@ -380,7 +388,8 @@ class FamilyReviewDialog(QDialog):
         arguments = {"generation": self.generation, "idempotency_key": "desktop-family-" + uuid.uuid4().hex,
             "purpose": self.purpose.text(), "reopen_reason": self.reopen_reason.text(),
             "use_direct_exception": self.direct_exception.isChecked(), "exception_reason": self.exception_reason.text(),
-            "gap_seconds": self.gap.value(), "normalization": self.normalization.currentData()}
+            "gap_seconds": self.gap.value(), "normalization": self.normalization.currentData(),
+            "page_layout": self.owner.review_page_layout()}
         self._render_scope(self.controller.snapshot())
         def done(result):
             self._pending_review_id = result["review_id"]

@@ -14,9 +14,9 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("Syllafolio")]
 [assembly: AssemblyDescription("Syllafolio Windows desktop launcher")]
 [assembly: AssemblyProduct("Syllafolio")]
-[assembly: AssemblyVersion("1.0.1.0")]
-[assembly: AssemblyFileVersion("1.0.1.0")]
-[assembly: AssemblyInformationalVersion("1.0.1")]
+[assembly: AssemblyVersion("1.0.2.0")]
+[assembly: AssemblyFileVersion("1.0.2.0")]
+[assembly: AssemblyInformationalVersion("1.0.2")]
 
 internal static class SyllafolioLauncher
 {
