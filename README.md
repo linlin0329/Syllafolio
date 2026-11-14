@@ -60,3 +60,9 @@ py -3.12 -m venv .venv
 ```
 
 The tests generate a signal in memory to exercise acoustic feature extraction. See [BUILDING.md](BUILDING.md) to rebuild the Windows distribution.
+
+## License
+
+Syllafolio's original application code is licensed under the [MIT License](LICENSE). Copyright (c) 2026 Zhaocun Lin.
+
+Third-party components retain their respective licenses. The [Zenodo example audio and its metadata](https://doi.org/10.5281/zenodo.24213511) are available under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).

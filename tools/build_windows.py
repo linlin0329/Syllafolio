@@ -206,6 +206,8 @@ def assemble(repository, seed, destination, runtime_lock, dependencies, inputs, 
         if source.is_file():
             regular_file(source, TOOLS)
             copy(source, source.name)
+    regular_file(repository / "LICENSE", repository)
+    copy(repository / "LICENSE", "LICENSE")
     for name in ("Start.cmd", "Run_Checks.cmd", "Record_Feedback.cmd"):
         path = destination / name
         text = io_path(path).read_text("utf-8").replace("\r\n", "\n")

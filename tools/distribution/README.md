@@ -1,5 +1,7 @@
 # Syllafolio Windows x64 1.0.0
 
+Syllafolio's original application code is licensed under the [MIT License](LICENSE). Copyright (c) 2026 Zhaocun Lin. Bundled third-party components retain their respective licenses.
+
 Fully extract this package, then double-click **Start.cmd**. It opens an empty workspace. No audio samples, demonstration projects, user projects or application acceptance datasets are included. Python and the fixed dependencies are private to this package; no Python/Conda installation or network download is needed.
 
 Use **Project → New project from syllables…** to import segmented mono or stereo audio in WAV, FLAC, MP3, Ogg Vorbis or AIFF (`.aif`/`.aiff`) format, or **Open project…** for an existing, normally closed project copy. All files in a batch must use the same sample rate of at least 32000 Hz. Each segment can be up to 30 seconds long. Syllafolio averages the left and right channels of stereo files for listening and analysis at the original sample rate. `Start.cmd --project "FULL_PROJECT_PATH"` explicitly opens a project; `--blank` is the same as the default empty startup. Preserve older installations and original projects. Make an official offline project backup before migration.

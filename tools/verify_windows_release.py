@@ -92,6 +92,9 @@ def exercise(release, evidence, work):
     sentinel.write_text("preserve this user file", encoding="utf-8")
     env = dict(os.environ, SYLLAFOLIO_RUNTIME_ROOT=str(work / "runtime"), PYTHONUTF8="1")
     try:
+        repo = Path(__file__).resolve().parents[1]
+        require((app / "LICENSE").read_bytes() == (repo / "LICENSE").read_bytes(),
+                "Installed application license differs from the repository LICENSE")
         log = evidence / "self-check.log"
         run_logged([python, "-B", "-X", "utf8", app / "check_prototype.py"], log, cwd=app, env=env)
         records = [line.removeprefix("Syllafolio self-check passed: ").strip()
@@ -112,7 +115,6 @@ def exercise(release, evidence, work):
                 "Installed desktop launcher failed")
         require(Path(startup["python"]).samefile(python), "Launch used a different Python runtime")
 
-        repo = Path(__file__).resolve().parents[1]
         test_env = dict(env, NUMBA_CACHE_DIR=str(work / "numba"), MPLCONFIGDIR=str(work / "mpl"))
         run_logged([python, "-B", "-X", "utf8", "-m", "unittest", "discover", "-v", "-s", "tests"],
                    evidence / "source-tests.log", cwd=repo, env=test_env)
