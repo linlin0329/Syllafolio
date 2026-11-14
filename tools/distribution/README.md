@@ -1,4 +1,4 @@
-# Syllafolio Windows x64 1.0.0
+# Syllafolio Windows x64 1.0.1
 
 Syllafolio's original application code is licensed under the [MIT License](LICENSE). Copyright (c) 2026 Zhaocun Lin. Bundled third-party components retain their respective licenses.
 

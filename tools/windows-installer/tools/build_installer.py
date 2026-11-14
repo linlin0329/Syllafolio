@@ -16,7 +16,7 @@ from zipfile import ZipFile
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 FOOTER_MAGIC = b"SYLLAFOLIO_SFX01"
 
 

@@ -8,10 +8,10 @@ These ten syllables come from recordings of Eurasian tree sparrows (*Passer mont
 
 ## Install on Windows x64
 
-Open the [Syllafolio v1.0.0 Windows release](https://github.com/linlin0329/Syllafolio/releases/tag/v1.0.0). Download **Syllafolio-Setup-1.0.0-x64.exe** and compare its SHA-256 with the entry in **SHA256SUMS.txt**.
+Open the [Syllafolio v1.0.1 Windows release](https://github.com/linlin0329/Syllafolio/releases/tag/v1.0.1). Download **Syllafolio-Setup-1.0.1-x64.exe** and compare its SHA-256 with the entry in **SHA256SUMS.txt**.
 
 ```powershell
-Get-FileHash -Algorithm SHA256 .\Syllafolio-Setup-1.0.0-x64.exe
+Get-FileHash -Algorithm SHA256 .\Syllafolio-Setup-1.0.1-x64.exe
 ```
 
 Double-click the installer and choose **Install**. Open **Syllafolio** from the desktop shortcut or the Start menu. If you prefer to keep the desktop clear, uncheck **Create a desktop shortcut** before installing. The installation is for the current Windows account. You can also download **Syllafolio-Windows-x64.zip**, extract the whole folder and double-click `Start.cmd`.

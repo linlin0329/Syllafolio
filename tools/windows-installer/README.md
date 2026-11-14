@@ -11,12 +11,12 @@ $payload = (Resolve-Path ../new-build/Syllafolio-Windows-x64.zip).Path
 $payloadReceipt = Get-Content ../new-build/receipt.json -Raw | ConvertFrom-Json
 $payloadFile = Get-Item -LiteralPath $payload
 $payloadSha = (Get-FileHash -LiteralPath $payload -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($payloadReceipt.status -ne 'passed' -or $payloadReceipt.version -ne '1.0.0' -or $payloadReceipt.sha256 -ne $payloadSha -or [long]$payloadReceipt.bytes -ne $payloadFile.Length) {
-    throw 'The portable ZIP does not match its successful 1.0.0 build receipt.'
+if ($payloadReceipt.status -ne 'passed' -or $payloadReceipt.version -ne '1.0.1' -or $payloadReceipt.sha256 -ne $payloadSha -or [long]$payloadReceipt.bytes -ne $payloadFile.Length) {
+    throw 'The portable ZIP does not match its successful 1.0.1 build receipt.'
 }
 .\tools\windows-installer\launcher\build.ps1 -Output ../installer-build/Syllafolio.exe
-python -B tools/windows-installer/tools/build_installer.py --payload $payload --expected-payload-sha256 $payloadSha --launcher ../installer-build/Syllafolio.exe --icon tools/windows-installer/branding/Syllafolio.ico --work ../installer-build/obj --output ../installer-build/Syllafolio-Setup-1.0.0-x64.exe --receipt ../installer-build/build-receipt.json
-Get-FileHash -Algorithm SHA256 ../installer-build/Syllafolio-Setup-1.0.0-x64.exe
+python -B tools/windows-installer/tools/build_installer.py --payload $payload --expected-payload-sha256 $payloadSha --launcher ../installer-build/Syllafolio.exe --icon tools/windows-installer/branding/Syllafolio.ico --work ../installer-build/obj --output ../installer-build/Syllafolio-Setup-1.0.1-x64.exe --receipt ../installer-build/build-receipt.json
+Get-FileHash -Algorithm SHA256 ../installer-build/Syllafolio-Setup-1.0.1-x64.exe
 ```
 
 The receipt-verified portable ZIP is embedded unchanged. For every build, review its contents and pass its actual verified digest using `--expected-payload-sha256`; there is no default payload digest. Setup verifies the payload, extracts the registered files, and adds the GUI launcher, an uninstall entry and Start menu shortcuts. The GUI launcher uses the installed private runtime. The checked-in icon can be regenerated with `branding/make_icon.py` and Pillow.
@@ -33,5 +33,5 @@ $manifest = (Resolve-Path tools/windows-installer/installer/installer.manifest).
 $test = (Resolve-Path tools/windows-installer/tests/WizardLayoutCheck.cs).Path
 $probe = Join-Path (Resolve-Path ../installer-build).Path 'WizardLayoutCheck.exe'
 & $compiler /nologo /target:exe /platform:x64 "/win32manifest:$manifest" "/out:$probe" /reference:System.Drawing.dll /reference:System.Windows.Forms.dll $test
-& $probe ..\installer-build\Syllafolio-Setup-1.0.0-x64.exe
+& $probe ..\installer-build\Syllafolio-Setup-1.0.1-x64.exe
 ```

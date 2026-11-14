@@ -38,7 +38,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $receipt = Get-Content -LiteralPath "$qa/portable.json" -Raw | ConvertFrom-Json
           $payloadHash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($receipt.status -ne 'passed' -or $receipt.version -ne '1.0.0' -or $receipt.sha256 -ne $payloadHash -or $receipt.bytes -ne (Get-Item $zip).Length) {
+          $sourceVersion = python -B -c "import runpy; print(runpy.run_path('src/syllafolio/__init__.py')['__version__'])"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$sourceVersion") {
+            throw "The release tag does not match the application version $sourceVersion."
+          }
+          if ($receipt.status -ne 'passed' -or $receipt.version -ne $sourceVersion -or $receipt.sha256 -ne $payloadHash -or $receipt.bytes -ne (Get-Item $zip).Length) {
             throw "The portable build receipt does not match the release payload."
           }
           $setup = Join-Path $out "Syllafolio-Setup-$($receipt.version)-x64.exe"
@@ -47,7 +52,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           foreach ($binary in @($setup, "$work/Syllafolio.exe", "$work/obj/Uninstall.exe")) {
             $version = (Get-Item -LiteralPath $binary).VersionInfo
-            if ($version.ProductVersion -ne $receipt.version -or $version.FileMajorPart -ne 1 -or $version.FileMinorPart -ne 0 -or $version.FileBuildPart -ne 0) {
+            if ($version.ProductVersion -ne $receipt.version -or $version.FileVersion -ne "$sourceVersion.0") {
               throw "Windows version resource does not match release: $binary ($($version.ProductVersion), $($version.FileVersion))"
             }
           }
