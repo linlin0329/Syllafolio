@@ -1,14 +1,16 @@
 # Syllafolio user guide
 
-Version **1.0.4** uses the supplied application source and hash-locked dependencies. It starts with an empty workspace and includes no business samples, demonstration projects or acceptance datasets. Build evidence and actual Windows acceptance are separate. Audibility, human type criteria and scientific validity require the actual user to check them.
+Version **1.0.5** uses the supplied application source and hash-locked dependencies. It starts with an empty workspace and includes no business samples, demonstration projects or acceptance datasets. Build evidence and actual Windows acceptance are separate. Audibility, human type criteria and scientific validity require the actual user to check them.
 
 New projects use the revised seven-band spectral contrast calculation. Opening an older project preserves its frozen features, candidate groups and saved review decisions. Re-import the audio into a separate new project to compare groupings with the revised calculation.
 
 ## Start and use your own project
 
-Fully extract the package and run **Start.cmd**. In Project, create a new project or open an existing project copy. **New project from syllables…** accepts a folder of segmented audio. **New project from recording and annotations…** accepts one recording with an annotation table defining the syllable intervals.
+On the welcome page, choose **Import syllable files…** for one audio file per syllable or **Import recording and annotations…** for a recording with interval boundaries. Choose **Open project…** to resume saved work. The same three routes are in the **Project** menu. Before creating the project, check the native sample rate, analysis band and band-pass setting, then enter the name or operator ID to attach to saved decisions. Daily annotation is the default; **Advanced settings…** contains the engineering project mode and its budget. Use **Help → User guide…** or press F1 to read this guide offline.
 
-Both routes accept mono or stereo WAV, FLAC, MP3, Ogg Vorbis and AIFF (`.aif`/`.aiff`) at 32,000 Hz or higher. Stereo input is mixed to mono by averaging the left and right samples at each frame. The preview, optional band-pass filter, spectrogram and acoustic features use that mix at the original sample rate. If the two channels contain separate microphone signals and you want to annotate just one, export that channel as a mono file before import.
+Both routes accept mono or stereo WAV, FLAC, MP3, Ogg Vorbis and AIFF (`.aif`/`.aiff`) at 16,000 Hz or higher. Stereo input is mixed to mono by averaging the left and right samples at each frame. The preview, optional band-pass filter, spectrogram and acoustic features use that mix at the original sample rate. If the two channels contain separate microphone signals and you want to annotate just one, export that channel as a mono file before import.
+
+At sample rates from 16 kHz to below 32 kHz, the MFCC and log-mel frequency band runs from 1000 Hz to 15/32 of the native sample rate. At 16 kHz this is 1000–7500 Hz, and the maximum spectrogram frequency is 8000 Hz. Spectral contrast uses lower octave boundaries. At 32 kHz and above the existing 1000–15000 Hz feature recipe is preserved. Projects and exported reports identify the acoustic band and feature version. Older projects retain their frozen audio, features and review results. When a previous assessment is marked historical, run a current assessment before exporting a new complete catalogue.
 
 Segmented files in one batch must share the same sample rate. Each imported syllable interval can be up to 30 seconds long, while a whole recording can be longer. For segmented input, use segments.json to declare parent recordings and frame boundaries explicitly. Unknown origins remain unknown; separate audio files are not automatically independent recordings.
 
@@ -34,7 +36,7 @@ With a small input such as the optional three-chirp example, the syllables may a
 
 ## Optional import band-pass filtering
 
-**Band-pass filter** is off by default in both new-project routes. If enabled, its starting settings are a **500 Hz low cutoff**, **15000 Hz high cutoff** and Butterworth design order **4**. Both cutoffs are adjustable; order can be **1–8**. The low cutoff must be above zero and below the high cutoff, and the high cutoff must be below half the audio sample rate. Invalid settings must be corrected before import.
+**Band-pass filter** is off by default in both new-project routes. If enabled, its starting settings are a **500 Hz low cutoff** and a **sample-rate-dependent high cutoff** (7500 Hz at 16 kHz, 15000 Hz at 32 kHz and above) and Butterworth design order **4**. Both cutoffs are adjustable; order can be **1–8**. The low cutoff must be above zero and below the high cutoff, and the high cutoff must be below half the audio sample rate. Invalid settings must be corrected before import.
 
 For **New project from syllables…**, choose the option in the input-review dialog before selecting **Import this input**. The complete declared parent source is filtered before its syllable intervals are cut. Where no larger parent source was provided, the complete syllable file is the source.
 
@@ -64,7 +66,13 @@ Choose the current human family for review. A star marks a pending decision, not
 
 Select **Global pool → Prepare group** to organize the current non-empty pool using the fixed acoustic route. Eligible items can be saved before all candidate first rounds finish. Real overlap locks only the corresponding stable IDs. An item saved out of the pool remains readable in its original frozen round.
 
-Items sent into the pool later do not silently alter an open frozen page. Use **More → Prepare again…**, give a reason, and explicitly prepare the latest whole pool. Historical records remain available. Pool details shows provenance and coverage. A temporarily empty pool or one closed early pool round does not prove final completion.
+New arrivals wait for a new round. Finish the current round to confirm its saved assignments and exclusions, then prepare the updated pool. **More → Prepare again…** can replace an open round when available. If an earlier assignment still needs confirmation after a replacement, follow the family task in **Final checks**. Locked syllables remain available for listening; select one to see which review or change is blocking its save.
+
+## Fine review
+
+Select a syllable, open **Item tools → Fine review…**, and inspect its sound or available source context. Record whether you can assess the diagnostic region, what you can tell about the component and which fine form the evidence supports. For a new fine type, enter its name, distinguishing features and creation reason. Syllafolio supplies the ID and binds it to the selected family. The new definition starts as a draft. You can also propose a candidate form without creating a type.
+
+Use **Review evidence…** to check the proposed decision, enter your observations and confirm the comparisons before submitting. A masked region may leave the fine form unresolved while retaining its family. An unexamined fine form remains unassessed. The offline catalogue and `tables/fine_form_counts.csv` report these statuses separately for family-assigned syllables within the declared scope; the item tables retain each stable ID and saved status.
 
 ## Checks, sources, assessment and delivery
 

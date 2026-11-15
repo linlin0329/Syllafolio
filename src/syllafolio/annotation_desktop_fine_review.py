@@ -11,11 +11,12 @@ import uuid
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget)
+    QHBoxLayout, QLabel, QLineEdit, QMenu, QStackedWidget, QPlainTextEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
 from .annotation_assistant_contracts import canonical_hash
 from .annotation_batch_review import item_version, family_definition_fingerprint
 from .annotation_manual_protocol import REVIEW_CHECKS
+from .annotation_form_status import projected_fine_form
 
 
 SCHEMA = "syllafolio-desktop-fine-drafts-v1"
@@ -219,13 +220,13 @@ class FineReviewController:
         value["checks"] = dict.fromkeys(REVIEW_CHECKS, False)
         return value
 
-    def submit(self, payload, *, audition_confirmed, idempotency_key=None):
+    def submit(self, payload, *, audition_confirmed, idempotency_key=None, saved_draft=None):
         _require(audition_confirmed is True, "FINE_AUDITION_REQUIRED", "Explicitly confirm this target's current listening and spectrogram inspection")
         _require(self.invalid_reason is None, "FINE_CONTEXT_CHANGED", self.invalid_reason or "Reload and review the current context")
         value = copy.deepcopy(payload)
         _require(value.get("item_id", self.item_id) == self.item_id, "FINE_ITEM_SCOPE", "Fine input belongs to a different target")
         value["item_id"] = self.item_id
-        draft_payload = copy.deepcopy(value)
+        draft_payload = copy.deepcopy(value if saved_draft is None else saved_draft)
         draft_payload["checks"] = dict.fromkeys(REVIEW_CHECKS, False)
         parent = value.pop("draft_new_leaf_parent", None)
         if value.get("new_leaf"):
@@ -264,6 +265,46 @@ class FineReviewController:
         return result
 
 
+CHOICE_LABELS = {
+    "diagnostic_region": {
+        "assessable": "Clear enough to assess", "unassessable": "Obscured or incomplete",
+        "not_assessed": "Not examined", "not_applicable": "Not applicable"},
+    "component_status": {
+        "present": "Present in the target", "not_observed_when_assessable": "Not observed in a clear region",
+        "undetermined": "Cannot determine", "not_assessed": "Not examined", "not_applicable": "Not applicable"},
+    "form_status": {
+        "main": "Main form", "variant": "Variant", "candidate_form": "Candidate new form",
+        "unresolved": "Unresolved after review", "not_assessed": "Not assessed", "not_applicable": "Not applicable"},
+    "boundary_status": {"no_issue_reported": "No boundary issue", "needs_review": "Boundary needs review"},
+    "processing_state": {
+        "decided": "Decision reached", "reviewed_unresolved": "Reviewed, uncertainty remains",
+        "unfinished": "Further inspection needed"},
+}
+TEXT_LABELS = {
+    "observation_text": "Observation", "question": "Review question", "reason": "Basis for the judgment",
+    "answer": "Conclusion", "comparison_note": "Comparisons made", "affected_relations_note": "Effect on type relationships",
+    "pending_steps": "Remaining steps", "unresolved_level": "Level still unresolved", "missing_information": "Missing evidence",
+}
+WORDING_FIELDS = ("question", "answer", "affected_relations_note", "unresolved_level")
+CHECK_LABELS = {
+    "comparisons_completed": "I completed the necessary comparisons.",
+    "affected_relations_checked": "I checked the affected type relationships.",
+    "no_required_steps_pending": "All required review steps are complete.",
+}
+
+
+def _plain_label(text="", *, bold=False):
+    label = QLabel()
+    label.setTextFormat(Qt.TextFormat.PlainText)
+    label.setWordWrap(True)
+    label.setText(text)
+    if bold:
+        font = label.font()
+        font.setBold(True)
+        label.setFont(font)
+    return label
+
+
 class FineReviewDialog(QDialog):
     auditionRequested = Signal(str, bool)
     inspectRequested = Signal(str, bool)
@@ -275,279 +316,624 @@ class FineReviewDialog(QDialog):
         self.owner, self.project, self.item_id, self.review_id = owner, owner.project, item_id, review_id
         self.generation = owner._close_coordinator.generation
         self.controller = FineReviewController(self.project, item_id, review_id)
-        self._dirty, self._loading, self._waiting = False, False, False
+        self._dirty = self._loading = self._waiting = self._stale = False
+        self._draft_available = False
+        self._new_leaf_id = None
+        self._suggested_wording = {}
+        self._context = None
+        self._revision = None
+        self.axes, self.texts, self.checks, self.new_leaf_fields = {}, {}, {}, {}
         self.setWindowTitle("Fine review · " + item_id)
         screen = owner.screen()
         available = screen.availableGeometry() if screen else None
-        self.resize(min(920, available.width() - 32) if available else 920,
-                    min(760, available.height() - 64) if available else 760)
-        if available:
-            self.move(max(available.left(), min(owner.frameGeometry().center().x() - self.width() // 2, available.right() - self.width())),
-                      max(available.top(), min(owner.frameGeometry().center().y() - self.height() // 2, available.bottom() - self.height())))
+        self.resize(min(860, available.width() - 32) if available else 860,
+                    min(735, available.height() - 64) if available else 735)
         layout = QVBoxLayout(self)
-        self.context_label = QLabel(); self.context_label.setWordWrap(True)
+        self.context_label = _plain_label(bold=True)
+        self.saved_label = _plain_label()
+        self.saved_label.setObjectName("fineSavedOutcome")
+        self.criteria_label = _plain_label()
         layout.addWidget(self.context_label)
-        actions = QHBoxLayout()
-        for label, context in (("Play target", False), ("Play source context", True)):
-            button = QPushButton(label)
-            button.setObjectName("finePlayContext" if context else "finePlayTarget")
-            if context: self.play_context = button
-            else: self.play_target = button
-            button.clicked.connect(lambda _checked=False, target=item_id, ctx=context: self.auditionRequested.emit(target, ctx))
-            actions.addWidget(button)
-        inspect = QPushButton("Inspect this target")
-        inspect.setObjectName("fineInspectTarget")
-        inspect.clicked.connect(lambda: self.inspectRequested.emit(self.item_id, False)); actions.addWidget(inspect)
-        stop = QPushButton("Stop"); stop.clicked.connect(self.stop); actions.addWidget(stop)
-        self.inspect_button, self.stop_button = inspect, stop
-        layout.addLayout(actions)
-        scroll = QScrollArea(); scroll.setWidgetResizable(True)
-        body = QWidget(); self.form_body = body; form = QFormLayout(body)
-        self.axes = {}
-        for key in AXES:
-            combo = QComboBox(); combo.setObjectName("fine_" + key)
-            combo.addItem("Choose explicitly…", CHOOSE)
-            if key in AXIS_OPTIONS:
-                for value in AXIS_OPTIONS[key]:
-                    combo.addItem(value.replace("_", " "), value)
-            else:
-                combo.addItem("None (explicit)", None)
-            self.axes[key] = combo
-            combo.currentIndexChanged.connect(self._changed)
-            form.addRow(key.replace("_", " ").title(), combo)
-        self.axes["family_id"].currentIndexChanged.connect(self._family_changed)
-        self.axes["leaf_id"].currentIndexChanged.connect(self._new_leaf_changed)
-        self.new_leaf_box = QGroupBox("Explicit new leaf draft (does not confirm its definition)")
-        new_form = QFormLayout(self.new_leaf_box)
-        self.new_leaf_fields = {}
-        for key in ("local_type_id", "parent_family_id", "title", "reason", "diagnostic_body", "main_variant_difference"):
-            edit = QLineEdit(); edit.setObjectName("fine_new_leaf_" + key)
-            edit.textChanged.connect(self._changed); self.new_leaf_fields[key] = edit
-            new_form.addRow(key.replace("_", " "), edit)
-        form.addRow(self.new_leaf_box)
-        self.processing = QComboBox(); self.processing.addItem("Choose explicitly…", CHOOSE)
-        for value in ("unfinished", "reviewed_unresolved", "decided"):
-            self.processing.addItem(value.replace("_", " "), value)
-        self.processing.currentIndexChanged.connect(self._changed)
-        form.addRow("Processing state", self.processing)
-        self.texts = {}
-        for key in TEXTS:
-            edit = QPlainTextEdit(); edit.setMaximumHeight(84); edit.setObjectName("fine_" + key)
-            edit.textChanged.connect(self._changed); self.texts[key] = edit
-            form.addRow(key.replace("_", " ").title(), edit)
-        self.checks = {}
-        for key in sorted(REVIEW_CHECKS):
-            check = QCheckBox(key.replace("_", " ")); check.toggled.connect(self._changed)
-            self.checks[key] = check; form.addRow(check)
-        self.audition = QCheckBox("I listened to and inspected this exact current target; restore does not carry this confirmation.")
-        self.audition.setObjectName("fineAuditionConfirmed"); self.audition.toggled.connect(self._changed)
-        form.addRow(self.audition)
-        scroll.setWidget(body); layout.addWidget(scroll, 1)
-        self.message = QLabel(self.controller.store.warning or "All fields are unsubmitted. Choose every axis and confirm actual inspection yourself.")
-        self.message.setWordWrap(True); layout.addWidget(self.message)
+        layout.addWidget(self.saved_label)
+        criterion_row = QHBoxLayout()
+        self.criteria_button = QPushButton("Family criteria")
+        self.criteria_button.setCheckable(True)
+        self.criteria_button.toggled.connect(self.criteria_label.setVisible)
+        criterion_row.addWidget(self.criteria_button)
+        self.inspect_button = self._button("Inspect spectrogram", "fineInspectTarget",
+                                          lambda: self.inspectRequested.emit(self.item_id, False))
+        self.play_target = self._button("Play target", "finePlayTarget",
+                                       lambda: self.auditionRequested.emit(self.item_id, False))
+        self.play_context = self._button("Play source context", "finePlayContext",
+                                        lambda: self.auditionRequested.emit(self.item_id, True))
+        self.stop_button = self._button("Stop", "fineStop", self.stop)
+        for button in (self.inspect_button, self.play_target, self.play_context, self.stop_button):
+            criterion_row.addWidget(button)
+        criterion_row.addStretch()
+        layout.addLayout(criterion_row)
+        layout.addWidget(self.criteria_label)
+        self.criteria_label.hide()
+        self.pages = QStackedWidget()
+        # The main window uses the same context when switching targets or closing.
+        self.form_body = self.pages
+        layout.addWidget(self.pages, 1)
+        self._build_judgment()
+        self._build_evidence()
+        self.summary = _plain_label()
+        self.summary.setObjectName("fineSummary")
+        layout.addWidget(self.summary)
+        self.message = _plain_label()
+        layout.addWidget(self.message)
         footer = QHBoxLayout()
-        self.save_button = QPushButton("Save draft"); self.save_button.clicked.connect(lambda: self._guard(self.save_draft))
-        self.restore_button = QPushButton("Restore draft"); self.restore_button.clicked.connect(lambda: self._guard(self.restore_draft))
-        self.reload_button = QPushButton("Reload scope / clear axes"); self.reload_button.clicked.connect(lambda: self._guard(self.reload_context))
-        self.submit_button = QPushButton("Submit fine decision"); self.submit_button.clicked.connect(lambda: self._guard(self.submit))
-        for button in (self.save_button, self.restore_button, self.reload_button, self.submit_button):
-            footer.addWidget(button)
+        self.more_button = QPushButton("Draft options")
+        menu = QMenu(self.more_button)
+        self.more_button.setMenu(menu)
+        self.save_button = menu.addAction("Save unsubmitted draft", lambda: self._guard(self.save_draft))
+        self.restore_button = menu.addAction("Restore draft", lambda: self._guard(self.restore_draft))
+        self.reload_button = menu.addAction("Reload saved context and reset choices", lambda: self._guard(self.reload_context))
+        footer.addWidget(self.more_button)
+        self.back_button = self._button("Back to judgment", "fineBack", self._back)
+        footer.addWidget(self.back_button)
+        footer.addStretch()
+        self.reinspect_button = self._button("Review again", "fineReviewAgain", lambda: self.reload_context(clear_text=True))
+        self.next_button = self._button("Review evidence…", "fineReviewEvidence", self._next)
+        self.submit_button = self._button("Save fine decision", "fineSubmitDecision", self.submit)
+        footer.addWidget(self.reinspect_button)
+        footer.addWidget(self.next_button)
+        footer.addWidget(self.submit_button)
+        footer.addWidget(self._button("Close", "fineClose", self.reject))
         layout.addLayout(footer)
-        self.timer = QTimer(self); self.timer.setInterval(350)
+        self.timer = QTimer(self)
+        self.timer.setInterval(350)
         self.timer.timeout.connect(lambda: self._guard(self.refresh))
-        self.finished.connect(lambda _result: self.timer.stop())
-        if hasattr(getattr(owner, "operationFailed", None), "connect"):
+        self.finished.connect(lambda _: self.timer.stop())
+        if hasattr(owner, "operationFailed"):
             owner.operationFailed.connect(self._operation_failed)
         self.reload_context(clear_text=False)
+        if self.controller.store.warning:
+            self.message.setText(self.controller.store.warning)
 
+    def _button(self, text, name, callback):
+        button = QPushButton(text)
+        button.setObjectName(name)
+        button.setAutoDefault(False)
+        button.clicked.connect(lambda _=False: self._guard(callback))
+        return button
+
+    def _page(self, name):
+        scroll = QScrollArea()
+        scroll.setObjectName(name)
+        scroll.setWidgetResizable(True)
+        self.pages.addWidget(scroll)
+        body = QWidget()
+        inner = QVBoxLayout(body)
+        scroll.setWidget(body)
+        return scroll, inner
+
+    def _combo(self, key, form, label, choices=()):
+        combo = QComboBox()
+        combo.setObjectName("fine_" + key)
+        combo.addItem("Choose…", CHOOSE)
+        for value in choices:
+            combo.addItem(CHOICE_LABELS[key][value], value)
+        form.addRow(label, combo)
+        return combo
+
+    def _build_judgment(self):
+        self.judgment_page, layout = self._page("fineJudgment")
+        layout.addWidget(_plain_label("Inspect the sound", bold=True))
+        self.judgment = QFormLayout()
+        self.judgment.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        layout.addLayout(self.judgment)
+        self.axes["family_id"] = self._combo("family_id", self.judgment, "Family for this decision")
+        for key, label in (("diagnostic_region", "Can the diagnostic region be assessed?"),
+                          ("component_status", "What can you tell about the component?"),
+                          ("form_status", "What fine form does the sound support?")):
+            self.axes[key] = self._combo(key, self.judgment, label, AXIS_OPTIONS[key])
+        self.axes["leaf_id"] = self._combo("leaf_id", self.judgment, "Fine type")
+        self.new_leaf_box = QGroupBox("New fine type · draft definition")
+        new_form = QFormLayout(self.new_leaf_box)
+        for key, label in (("title", "Name"),("main_variant_difference", "Distinguishing features"),
+                          ("reason", "Reason for creating this type")):
+            edit = QLineEdit()
+            edit.setObjectName("fine_new_leaf_" + key)
+            edit.textChanged.connect(self._edited)
+            new_form.addRow(label, edit)
+            self.new_leaf_fields[key] = edit
+        # Older drafts may have a separate diagnostic body. Keep it editable.
+        self.leaf_detail = self._button("Additional diagnostic criteria…", "fineLeafDetails", self._toggle_leaf_details)
+        new_form.addRow(self.leaf_detail)
+        body = QLineEdit()
+        body.setObjectName("fine_new_leaf_diagnostic_body")
+        body.textChanged.connect(self._edited)
+        self.new_leaf_fields["diagnostic_body"] = body
+        new_form.addRow("Diagnostic criteria", body)
+        new_form.setRowVisible(body, False)
+        self._leaf_form = new_form
+        layout.addWidget(self.new_leaf_box)
+        status_form = QFormLayout()
+        self.axes["boundary_status"] = self._combo("boundary_status", status_form, "Syllable boundaries", AXIS_OPTIONS["boundary_status"])
+        self.processing = self._combo("processing_state", status_form, "Review progress", ("decided", "reviewed_unresolved", "unfinished"))
+        layout.addLayout(status_form)
+        self.guidance = _plain_label()
+        layout.addWidget(self.guidance)
+        layout.addStretch()
+        self.axes["family_id"].currentIndexChanged.connect(self._family_changed)
+        self.axes["form_status"].currentIndexChanged.connect(self._form_changed)
+        for key in ("diagnostic_region", "component_status", "boundary_status", "leaf_id"):
+            self.axes[key].currentIndexChanged.connect(self._edited)
+        self.processing.currentIndexChanged.connect(self._edited)
+
+    def _build_evidence(self):
+        self.evidence_page, layout = self._page("fineEvidence")
+        layout.addWidget(_plain_label("Evidence and decision record", bold=True))
+        self.wording_button = self._button("Use decision wording", "fineUseDecisionWording", self._use_decision_wording)
+        self.wording_button.setToolTip("Fill the question, conclusion and type relationships from your choices. You can edit the wording.")
+        wording_actions = QHBoxLayout()
+        wording_actions.addWidget(self.wording_button)
+        self.show_wording = QCheckBox("Show decision wording")
+        self.show_wording.setChecked(True)
+        self.show_wording.toggled.connect(self._update_controls)
+        wording_actions.addWidget(self.show_wording)
+        wording_actions.addStretch()
+        layout.addLayout(wording_actions)
+        self.evidence_form = QFormLayout()
+        self.evidence_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        layout.addLayout(self.evidence_form)
+        for key in TEXTS:
+            edit = QPlainTextEdit()
+            edit.setObjectName("fine_" + key)
+            edit.setFixedHeight(44)
+            edit.textChanged.connect(self._edited)
+            self.evidence_form.addRow(TEXT_LABELS[key], edit)
+            self.texts[key] = edit
+        for key in sorted(REVIEW_CHECKS):
+            check = QCheckBox(CHECK_LABELS[key])
+            check.toggled.connect(self._update_controls)
+            self.checks[key] = check
+            layout.addWidget(check)
+        self.audition = QCheckBox("I listened to this syllable and inspected its spectrogram.")
+        self.audition.setObjectName("fineAuditionConfirmed")
+        self.audition.toggled.connect(self._update_controls)
+        layout.addWidget(self.audition)
+        layout.addStretch()
+
+    def _toggle_leaf_details(self):
+        field = self.new_leaf_fields["diagnostic_body"]
+        self._leaf_form.setRowVisible(field, not self._leaf_form.isRowVisible(field))
+
+    def _use_decision_wording(self):
+        """Reuse the operator's selections only; observations and comparisons remain human inputs."""
+        family = self.axes["family_id"].currentData()
+        family_name = self._names.get(family, family) if family else "unresolved"
+        form = CHOICE_LABELS["form_status"][self.axes["form_status"].currentData()]
+        leaf = self.axes["leaf_id"].currentData()
+        if leaf == NEW_LEAF:
+            relation = f"Create a draft fine type within {family_name}: {self.new_leaf_fields['title'].text().strip()}."
+        elif leaf:
+            relation = f"Family: {family_name}. Fine type: {self._names.get(leaf, leaf)}."
+        else:
+            relation = f"Family: {family_name}. No fine type assigned."
+        suggestions = {
+            "question": "What level of fine-form assignment does this syllable support?",
+            "answer": f"Family: {family_name}. Fine form: {form}.",
+            "affected_relations_note": relation,
+            "unresolved_level": "Fine form" if family else "Family",
+        }
+        for key in self._text_keys():
+            edit = self.texts[key]
+            if key in suggestions and not edit.toPlainText().strip():
+                edit.setPlainText(suggestions[key])
+                self._suggested_wording[key] = suggestions[key]
+        self.show_wording.setChecked(False)
+
+    def _next(self):
+        if self._problem():
+            self.guidance.setText(self._problem())
+            return
+        self._clear_confirmations()
+        self.pages.setCurrentWidget(self.evidence_page)
+        self._update_controls()
+
+    def _back(self):
+        self._clear_confirmations()
+        self.pages.setCurrentWidget(self.judgment_page)
+        self._update_controls()
     def is_current(self):
-        return self.owner.project is self.project and self.owner._close_coordinator.generation == self.generation and self.owner._close_coordinator.state == "open"
+        return (self.owner.project is self.project and self.owner._close_coordinator.generation == self.generation
+                and self.owner._close_coordinator.state == "open")
 
     def _guard(self, function):
         try:
             return function()
         except Exception as exc:
-            self.message.setText(f"{getattr(exc, 'code', type(exc).__name__)}: {system_error(exc)}")
+            self.message.setText(system_error(exc))
             self.owner._error(exc, operation="Fine review " + self.item_id)
-            return None
 
     def _operation_failed(self, message):
         if self._waiting:
             self._waiting = False
             self.message.setText(message)
+            self._update_controls()
 
-    def _changed(self, *_args):
-        if not self._loading:
-            self._dirty = True
+    def _family_changed(self):
+        if self._loading:
+            return
+        self._loading = True
+        for key in ("diagnostic_region", "component_status", "form_status", "boundary_status"):
+            self.axes[key].setCurrentIndex(0)
+        self.processing.setCurrentIndex(0)
+        self._clear_leaf_draft()
+        self._populate_leaves()
+        self._loading = False
+        self._edited()
 
-    def _family_changed(self, *_args):
+    def _form_changed(self):
         if self._loading:
             return
         self._loading = True
         self._populate_leaves()
-        for key in AXIS_OPTIONS:
-            self.axes[key].setCurrentIndex(0)
-        for check in self.checks.values():
-            check.setChecked(False)
-        self.audition.setChecked(False)
+        self._loading = False
+        self._edited()
+
+    def _clear_leaf_draft(self):
+        self._new_leaf_id = None
         for edit in self.new_leaf_fields.values():
             edit.clear()
-        self._loading = False
-        self._new_leaf_changed(); self._changed()
+        self._leaf_form.setRowVisible(self.new_leaf_fields["diagnostic_body"], False)
 
     def _populate_leaves(self):
         family = self.axes["family_id"].currentData()
+        form = self.axes["form_status"].currentData()
         combo = self.axes["leaf_id"]
-        combo.clear(); combo.addItem("Choose explicitly…", CHOOSE); combo.addItem("None (explicit)", None)
+        combo.clear()
+        if form not in ("main", "variant", "candidate_form") or family in (None, CHOOSE):
+            combo.addItem("No fine type assigned", None)
+            self.judgment.setRowVisible(combo, False)
+            return
+        self.judgment.setRowVisible(combo, True)
+        if form == "candidate_form":
+            combo.addItem("Propose the form only", None)
+        else:
+            combo.addItem("Choose a fine type…", CHOOSE)
         for row in self._context["leaves"]:
             if row["parent_type_id"] == family:
-                combo.addItem(row["local_type_id"], row["local_type_id"])
-        combo.addItem("Create explicit new leaf…", NEW_LEAF)
+                key = row["local_type_id"]
+                combo.addItem(self._names.get(key, key), key)
+                combo.setItemData(combo.count() - 1, key, Qt.ItemDataRole.ToolTipRole)
+        combo.addItem("Create new fine type…", NEW_LEAF)
 
-    def _new_leaf_changed(self, *_args):
-        self.new_leaf_box.setEnabled(self.axes["leaf_id"].currentData() == NEW_LEAF)
+    def _edited(self, *_):
+        if self._loading:
+            return
+        if self.pages.currentWidget() is self.evidence_page and self.sender() in (
+                self.texts[k] for k in WORDING_FIELDS):
+            self.show_wording.setChecked(True)
+        if self.pages.currentWidget() is self.judgment_page and self._suggested_wording:
+            # Discard untouched suggested prose when its underlying choices change.
+            self._loading = True
+            for key, previous in self._suggested_wording.items():
+                if self.texts[key].toPlainText() == previous:
+                    self.texts[key].clear()
+            self._suggested_wording.clear()
+            self._loading = False
+        if self.axes["leaf_id"].currentData() == NEW_LEAF and not self._new_leaf_id:
+            self._new_leaf_id = "L-" + uuid.uuid4().hex
+        self._dirty = True
+        self._clear_confirmations()
+        self._update_controls()
+
+    def _text_keys(self):
+        state = self.processing.currentData()
+        keys = ["question", "observation_text", "reason"]
+        if state == "unfinished":
+            keys.append("pending_steps")
+        elif state in ("reviewed_unresolved", "decided"):
+            keys.extend(("answer", "comparison_note", "affected_relations_note"))
+            if state == "reviewed_unresolved":
+                keys.extend(("unresolved_level", "missing_information"))
+        return keys
 
     def payload(self):
-        axes = {key: combo.currentData() for key, combo in self.axes.items() if combo.currentData() != CHOOSE}
+        axes = {k: w.currentData() for k, w in self.axes.items() if w.currentData() != CHOOSE}
+        if "family_id" in axes:
+            axes["family_status"] = "assigned" if axes["family_id"] is not None else "unresolved"
         value = {"item_id": self.item_id, "axes": axes,
-                 **{key: edit.toPlainText() for key, edit in self.texts.items()},
-                 "checks": {key: check.isChecked() for key, check in self.checks.items()}}
+                 **{key: self.texts[key].toPlainText() for key in self._text_keys()},
+                 "checks": {k: w.isChecked() for k, w in self.checks.items()}}
         if self.processing.currentData() != CHOOSE:
             value["processing_state"] = self.processing.currentData()
         if axes.get("leaf_id") == NEW_LEAF:
-            leaf = {key: edit.text() for key, edit in self.new_leaf_fields.items()}
-            value["draft_new_leaf_parent"] = leaf.pop("parent_family_id")
-            axes["leaf_id"] = leaf["local_type_id"]
-            value["new_leaf"] = leaf
+            axes["leaf_id"] = self._new_leaf_id
+            value["new_leaf"] = {"local_type_id": self._new_leaf_id,
+                                 **{k: w.text() for k, w in self.new_leaf_fields.items()}}
+            value["draft_new_leaf_parent"] = axes["family_id"]
         return value
 
+    def _problem(self):
+        f = self.axes["family_id"].currentData()
+        if f == CHOOSE:
+            return "Choose the family for this decision."
+        for key, msg in (("diagnostic_region", "Choose whether the diagnostic region can be assessed."),
+                         ("component_status", "Record what you can tell about the diagnostic component."),
+                         ("form_status", "Choose the finest form judgment supported by the evidence.")):
+            if self.axes[key].currentData() == CHOOSE:
+                return msg
+        region = self.axes["diagnostic_region"].currentData()
+        component = self.axes["component_status"].currentData()
+        form = self.axes["form_status"].currentData()
+        leaf = self.axes["leaf_id"].currentData()
+        if component in ("present", "not_observed_when_assessable") and region != "assessable":
+            return "Presence or absence requires an assessable diagnostic region."
+        if form == "candidate_form" and f is None:
+            return "Choose the family whose fine form you are proposing."
+        if form in ("main", "variant"):
+            if f is None:
+                return "A main form or variant needs a supported family."
+            expected = "present" if form == "variant" else "not_observed_when_assessable"
+            if component != expected:
+                return ("A variant requires the diagnostic component to be present." if form == "variant"
+                        else "A main form requires an assessable region with the diagnostic component absent.")
+            if leaf in (None, CHOOSE):
+                return "Choose an existing fine type or create a draft definition."
+        if leaf == NEW_LEAF:
+            if any(not self.new_leaf_fields[key].text().strip() for key in ("title", "reason")):
+                return "Enter a name and a creation reason for the new fine type."
+            if not any(self.new_leaf_fields[k].text().strip() for k in ("main_variant_difference", "diagnostic_body")):
+                return "Describe the features that distinguish the proposed fine type."
+        boundary = self.axes["boundary_status"].currentData()
+        processing = self.processing.currentData()
+        if boundary == CHOOSE or processing == CHOOSE:
+            return "Choose the boundary status and review progress."
+        if processing != "unfinished" and boundary == "needs_review":
+            return "Keep the review open while a boundary still needs inspection."
+        if processing == "reviewed_unresolved" and form not in ("unresolved", "candidate_form", "not_applicable"):
+            return "For remaining uncertainty, choose an unresolved or candidate judgment."
+        if leaf == NEW_LEAF and processing != "decided":
+            return "To record a new type draft, finish this decision or propose the form without creating a type."
+        if form in ("main", "variant") and boundary == "needs_review":
+            return "Resolve the boundary before assigning a main form or variant."
+        return ""
+
+    def _summary(self):
+        axes = self.payload()["axes"]
+        family = axes.get("family_id")
+        leaf = axes.get("leaf_id")
+        family_name = self._names.get(family, family) if family else "Unresolved"
+        form = CHOICE_LABELS["form_status"].get(axes.get("form_status"), "Not selected")
+        leaf_name = (self.new_leaf_fields["title"].text().strip() if self.axes["leaf_id"].currentData() == NEW_LEAF
+                     else self._names.get(leaf, leaf))
+        suffix = f" · {leaf_name}" if leaf_name else ""
+        action = ("Create draft definition" if self.axes["leaf_id"].currentData() == NEW_LEAF
+                  else "Use existing definition")
+        region = CHOICE_LABELS["diagnostic_region"].get(axes.get("diagnostic_region"), "Not selected")
+        part = CHOICE_LABELS["component_status"].get(axes.get("component_status"), "Not selected")
+        progress = CHOICE_LABELS["processing_state"].get(self.processing.currentData(), "Not selected")
+        return (f"{self.item_id} · Family: {family_name} · {form}{suffix}\n"
+                f"Region: {region} · Component: {part} · {progress}" + (f" · {action}" if leaf_name else ""))
+
+    def _update_controls(self, *_):
+        if not self._context or self._loading:
+            return
+        available = (self.is_current() and not self.owner._busy and not self._waiting
+                     and not self.controller.invalid_reason and not self.controller.submitted and not self._stale)
+        self.form_body.setEnabled(available)
+        self.new_leaf_box.setVisible(self.axes["leaf_id"].currentData() == NEW_LEAF)
+        complete = self.processing.currentData() != "unfinished"
+        active_texts = self._text_keys()
+        for key, edit in self.texts.items():
+            visible = self.show_wording.isChecked() or key not in WORDING_FIELDS or not edit.toPlainText().strip()
+            self.evidence_form.setRowVisible(edit, key in active_texts and visible)
+        for check in self.checks.values():
+            check.setVisible(complete)
+        on_target = self.pages.currentWidget() is self.judgment_page
+        self.back_button.setVisible(not on_target)
+        self.reinspect_button.setVisible(self.controller.submitted)
+        self.reinspect_button.setEnabled(self.is_current() and not self.owner._busy and not self._waiting)
+        self.next_button.setVisible(on_target and not self.controller.submitted)
+        self.submit_button.setVisible(not on_target and not self.controller.submitted)
+        self.summary.setVisible(not on_target)
+        problem = self._problem()
+        self.guidance.setText(problem)
+        self.summary.setText(self._summary())
+        self.next_button.setEnabled(available and not problem)
+        self.submit_button.setEnabled(available and not on_target and not problem and not self._context["blockers"]
+                                      and all(self.texts[k].toPlainText().strip() for k in active_texts)
+                                      and (not complete or all(c.isChecked() for c in self.checks.values()))
+                                      and self.audition.isChecked())
+        self.restore_button.setEnabled(available and self._draft_available)
+        self.save_button.setEnabled(available and self._dirty)
+        self.reload_button.setEnabled(self.is_current() and not self._waiting and not self.owner._busy)
+        self.back_button.setEnabled(available)
     def save_draft(self):
         if self._dirty:
-            self.controller.save_draft(self.payload())
+            self.controller.save_draft(self._draft_payload())
             self._dirty = False
-            self.message.setText("Unsubmitted draft saved. No decision or listening confirmation was submitted.")
+            self._draft_available = True
+            self.message.setText("Fine review draft saved.")
+            self._update_controls()
         return True
 
+    def _draft_payload(self):
+        return {**self.payload(), **{key: edit.toPlainText() for key, edit in self.texts.items()}}
+
     def _fill(self, value):
+        axes = value.get("axes", {})
+        self._suggested_wording.clear()
         self._loading = True
-        for key, combo in self.axes.items():
-            selected = value.get("axes", {}).get(key, CHOOSE)
-            if key == "leaf_id" and value.get("new_leaf"):
-                selected = NEW_LEAF
-            combo.setCurrentIndex(max(0, combo.findData(selected)))
-        selected_leaf = value.get("axes", {}).get("leaf_id", CHOOSE)
-        self._populate_leaves()
-        self.axes["leaf_id"].setCurrentIndex(max(0, self.axes["leaf_id"].findData(NEW_LEAF if value.get("new_leaf") else selected_leaf)))
-        for key, edit in self.new_leaf_fields.items():
-            edit.setText(value.get("draft_new_leaf_parent", "") if key == "parent_family_id" else value.get("new_leaf", {}).get(key, ""))
-        for key, edit in self.texts.items():
-            edit.setPlainText(value.get(key, ""))
-        self.processing.setCurrentIndex(max(0, self.processing.findData(value.get("processing_state", CHOOSE))))
-        for check in self.checks.values():
-            check.setChecked(False)
-        self.audition.setChecked(False)
-        self._loading = False
-        self._new_leaf_changed(); self._dirty = True
+        try:
+            family = self.axes["family_id"]
+            current = self._context["binding"]["families"]
+            default = current[0] if len(current) == 1 and not self._context["directed"] else CHOOSE
+            family.setCurrentIndex(max(0, family.findData(axes.get("family_id", default))))
+            for key in AXIS_OPTIONS:
+                if key in self.axes:
+                    combo = self.axes[key]
+                    combo.setCurrentIndex(max(0, combo.findData(axes.get(key, CHOOSE))))
+            self._populate_leaves()
+            self._clear_leaf_draft()
+            leaf = value.get("new_leaf")
+            if leaf:
+                _require(value.get("draft_new_leaf_parent") == family.currentData(),
+                         "FINE_DRAFT_STALE", "The draft fine type belongs to a different family.")
+                self._new_leaf_id = leaf["local_type_id"]
+                for key, edit in self.new_leaf_fields.items():
+                    edit.setText(leaf.get(key, ""))
+                self._leaf_form.setRowVisible(self.new_leaf_fields["diagnostic_body"], bool(leaf.get("diagnostic_body")))
+            combo = self.axes["leaf_id"]
+            combo.setCurrentIndex(max(0, combo.findData(NEW_LEAF if leaf else axes.get("leaf_id", CHOOSE))))
+            for key, edit in self.texts.items():
+                edit.setPlainText(value.get(key, ""))
+            self.processing.setCurrentIndex(max(0, self.processing.findData(value.get("processing_state", CHOOSE))))
+        finally:
+            self._loading = False
+        self._dirty = True
+        self._back()
 
     def restore_draft(self):
         self._fill(self.controller.restore_draft())
-        self.message.setText("Draft restored as unsubmitted. All inspection and completion confirmations are cleared.")
+        self.message.setText("Restored unsubmitted choices. Inspect this target before confirming.")
+
+    def _set_header(self, context):
+        state = context["state"]
+        names = {key: card.get("title") or key for key, card in state.get("type_cards", {}).items()}
+        for row in state.get("batch_review", {}).get("families", []):
+            names.setdefault(row["family_id"], row.get("title") or row["family_id"])
+        self._names = names
+        ids = context["binding"]["families"]
+        family = ids[0] if len(ids) == 1 else None
+        leaf = next((r["local_type_id"] for r in context["leaves"] if self.item_id in r["member_ids"]), None)
+        item = next(row for row in state["items"] if row["item_id"] == self.item_id)
+        saved = state.get("batch_review", {}).get("assignments", {}).get(self.item_id, {})
+        decisions = state["decisions"]
+        if isinstance(decisions, dict):
+            decisions = decisions.values()
+        fine = projected_fine_form(self.item_id, item.get("current_issue_ids", []), saved, family, leaf,
+                                   decisions, set(state.get("effective_decision_ids", [])))
+        label = CHOICE_LABELS["form_status"].get(fine["form_status"], "Not recorded")
+        self.context_label.setText(self.item_id + " · " + (names.get(family, family) if family else "No assigned family"))
+        self.saved_label.setText("Saved fine form: " + label + (" · " + names.get(leaf, leaf) if leaf else ""))
+        card = state.get("type_cards", {}).get(family, {})
+        self.criteria_label.setText(card.get("diagnostic_body") or "No saved diagnostic criteria for this family.")
+        self.play_context.setEnabled(self.project.dataset._items[self.item_id].get("context_kind") == "source_parent")
+        if self._stale or self.controller.invalid_reason:
+            self.message.setText(self.controller.invalid_reason or "The saved context changed. Reload and inspect this syllable again.")
+        elif context["blockers"]:
+            self.message.setText("Finish the open review before submitting this decision." if "FINE_REVIEW_SCOPE_STALE" not in context["blockers"]
+                                 else "This saved round is historical. Open the syllable in the current scope to submit a decision.")
 
     def reload_context(self, *, clear_text=False):
         self.controller.rebase()
+        self._suggested_wording.clear()
         self._context = self.controller.context()
+        self._revision = self._context["state"]["revision"]
+        self._stale = False
         self._loading = True
-        family_combo = self.axes["family_id"]
-        family_combo.clear(); family_combo.addItem("Choose explicitly…", CHOOSE); family_combo.addItem("None (explicit)", None)
-        current = set(self._context["binding"]["families"])
-        for row in self._context["families"]:
-            if self._context["directed"] or row["local_type_id"] in current:
-                family_combo.addItem(row["local_type_id"], row["local_type_id"])
-        for combo in self.axes.values():
-            combo.setCurrentIndex(0)
-        self.processing.setCurrentIndex(0)
-        for edit in self.new_leaf_fields.values(): edit.clear()
-        for check in self.checks.values(): check.setChecked(False)
-        self.audition.setChecked(False)
-        if clear_text:
-            for edit in self.texts.values(): edit.clear()
-        self._loading = False
-        self._family_changed()
+        try:
+            self._set_header(self._context)
+            self._clear_leaf_draft()
+            family_combo = self.axes["family_id"]
+            family_combo.clear()
+            family_combo.addItem("Choose a family…", CHOOSE)
+            family_combo.addItem("Family unresolved", None)
+            current = self._context["binding"]["families"]
+            directed = self._context["directed"]
+            for row in self._context["families"]:
+                key = row["local_type_id"]
+                if directed or key in current:
+                    family_combo.addItem(self._names.get(key, key), key)
+                    family_combo.setItemData(family_combo.count()-1, key, Qt.ItemDataRole.ToolTipRole)
+            retained = not directed and len(current) == 1
+            if retained:
+                family_combo.setCurrentIndex(family_combo.findData(current[0]))
+            self.judgment.setRowVisible(family_combo, not retained)
+            for key in AXIS_OPTIONS:
+                if key in self.axes:
+                    self.axes[key].setCurrentIndex(0)
+            self._populate_leaves()
+            self.processing.setCurrentIndex(0)
+            if clear_text:
+                for edit in self.texts.values():
+                    edit.clear()
+            if directed and not self.texts["question"].toPlainText():
+                review = self._context["state"]["batch_review"]["reviews"][self.review_id]
+                self.texts["question"].setPlainText(review.get("directed_context", {}).get("question", ""))
+            self._draft_available = self.controller.store.get(self.controller.key) is not None
+        finally:
+            self._loading = False
         self._dirty = False
-        self.refresh()
+        self._back()
+        if self._draft_available and not self._context["blockers"]:
+            self.message.setText("A saved fine review draft is available in Draft options.")
+        elif not self._context["blockers"]:
+            self.message.clear()
         if self.isVisible() and self.is_current():
             self.timer.start()
 
-    def refresh(self):
-        if self.owner._busy:
-            self.form_body.setEnabled(False)
-            self.submit_button.setEnabled(False)
-            for button in (self.save_button, self.restore_button, self.reload_button): button.setEnabled(False)
-            return
-        self._waiting = False
-        for button in (self.save_button, self.restore_button, self.reload_button): button.setEnabled(self.is_current())
-        self.form_body.setEnabled(self.is_current() and self.controller.invalid_reason is None and not self.controller.submitted)
+    def refresh(self, force=False):
         if not self.is_current():
-            self.invalidate("Project changed or is closing. This fine form cannot submit to another owner.")
+            self.invalidate("The project changed or is closing. Reopen Fine review for the current syllable.")
             return
-        context = self.controller.context()
-        stale = context["binding"] != self.controller.base
-        self.context_label.setText(f"Target {self.item_id} · Current family {', '.join(context['binding']['families']) or 'unresolved'} · "
-            + ("Bound directed review: " + str(self.review_id) if context["directed"] else "Ordinary: close the current review before submission")
-            + (" · Scope changed: reload and inspect again" if stale else "")
-            + (" · Selected scope is stale/read-only; choose the current target scope" if "FINE_REVIEW_SCOPE_STALE" in context["blockers"] else
-               " · Draft only until the ordinary round closes" if context["blockers"] else ""))
-        self.submit_button.setEnabled(not stale and not context["blockers"] and not self.controller.invalid_reason and not self.controller.submitted)
+        if not self.owner._busy:
+            state = getattr(self.owner, "state", None)
+            if force or state is None or state.get("revision") != self._revision:
+                context = self.controller.context()
+                self._revision = context["state"]["revision"]
+                self._stale = context["binding"] != self.controller.base
+                self._context = context
+                if self._stale:
+                    self._clear_confirmations()
+                self._set_header(context)
+        self._update_controls()
 
     def submit(self):
-        _require(self.is_current(), "FINE_CONTEXT_CHANGED", "The current project changed")
+        _require(self.is_current() and self.pages.currentWidget() is self.evidence_page and self.submit_button.isEnabled(),
+                 "FINE_CONTEXT_CHANGED", "Review the judgment, evidence and explicit confirmations before saving.")
         value = self.payload()
+        draft = self._draft_payload()
         heard = self.audition.isChecked()
         self.save_draft()
         self._waiting = True
-        self.submit_button.setEnabled(False)
-        self.form_body.setEnabled(False)
-        for button in (self.save_button, self.restore_button, self.reload_button): button.setEnabled(False)
+        self._update_controls()
         def completed(result):
             self._waiting = False
-            self.message.setText("Fine decision saved through the shared service." +
-                (" Draft cleanup needs attention: " + result["draft_cleanup_error"] if result.get("draft_cleanup_error") else "") +
-                (" A newer unsubmitted draft was retained." if result.get("draft_retained") else ""))
+            self._draft_available = bool(result.get("draft_retained") or result.get("draft_cleanup_error"))
             self.submitted.emit(result)
-            self.refresh()
+            self.refresh(force=True)
+            self.message.setText("Fine decision saved." +
+                (" A newer unsubmitted draft was retained." if result.get("draft_retained") else "") +
+                (" Draft cleanup needs attention: " + result["draft_cleanup_error"] if result.get("draft_cleanup_error") else ""))
         def run(_progress, _cancelled):
-            return self.controller.submit(value, audition_confirmed=heard)
+            return self.controller.submit(value, audition_confirmed=heard, saved_draft=draft)
         try:
             self.owner._run("Submit fine decision for " + self.item_id, run, completed)
         except Exception:
             self._waiting = False
+            self._update_controls()
             raise
 
     def invalidate(self, reason):
         self.controller.invalidate(reason)
         self.timer.stop()
-        self._loading = True
-        self.audition.setChecked(False)
-        for check in self.checks.values(): check.setChecked(False)
-        self._loading = False
-        self.form_body.setEnabled(False)
-        self.submit_button.setEnabled(False)
+        self._clear_confirmations()
+        self._update_controls()
         self.message.setText(reason)
 
     def stop(self):
         self.stopRequested.emit(self.item_id)
 
     def _clear_confirmations(self):
-        self._loading = True
-        self.audition.setChecked(False)
-        for check in self.checks.values(): check.setChecked(False)
-        self._loading = False
+        for check in (*self.checks.values(), self.audition):
+            check.blockSignals(True)
+            check.setChecked(False)
+            check.blockSignals(False)
 
     def reject(self):
         try:
             self.save_draft()
         except Exception as exc:
-            self._guard(lambda: (_ for _ in ()).throw(exc))
+            self.message.setText(system_error(exc))
+            self.owner._error(exc, operation="Save fine review draft")
             return
         self._clear_confirmations()
         self.stop()
@@ -557,10 +943,17 @@ class FineReviewDialog(QDialog):
         try:
             self.save_draft()
         except Exception as exc:
-            event.ignore(); self._guard(lambda: (_ for _ in ()).throw(exc)); return
+            event.ignore()
+            self.message.setText(system_error(exc))
+            self.owner._error(exc, operation="Save fine review draft")
+            return
+        self.timer.stop()
         self._clear_confirmations()
-        self.stop(); self.timer.stop(); super().closeEvent(event)
+        self.stop()
+        super().closeEvent(event)
 
     def showEvent(self, event):
         super().showEvent(event)
-        self.refresh(); self.timer.start()
+        self.refresh(force=True)
+        if self.is_current():
+            self.timer.start()

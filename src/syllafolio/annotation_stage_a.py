@@ -20,15 +20,16 @@ import soundfile as sf
 
 from . import ei_b_assistance as assistance
 from .acoustics import bandpass as bp
-from .acoustics.config import spectral_contrast_parameters
+from .acoustics.config import FULL_BAND_MIN_RATE, analysis_frequency_band, spectral_contrast_parameters
 
 SOURCE_SCHEMA = "annotation-segments-v1"
 PROVENANCE_SCHEMA = "annotation-stage-a-provenance-v1"
 PRESET_ID = "stage-a-existing-105d-umap10-hdbscan-leaf-v1"
 LEGACY_FEATURE_RECIPE = "stage-a-existing105-logmel64x32-v1"
 FEATURE_RECIPE = "stage-a-105-logmel64x32-contrast-v2"
+LOW_RATE_FEATURE_RECIPE = "stage-a-105-logmel64x32-lowrate-v1"
 LIMITS = {"max_items": 5000, "max_total_audio_bytes": 2 * 1024 * 1024 * 1024,
-          "minimum_sample_rate_hz": 32000, "minimum_frames": 8,
+          "minimum_sample_rate_hz": 16000, "minimum_frames": 8,
           "maximum_segment_seconds": 30.0}
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
 INPUT_FORMATS = {".wav": "WAV", ".flac": "FLAC", ".mp3": "MP3", ".ogg": "Ogg Vorbis",
@@ -107,7 +108,7 @@ def _audio_header(path):
     _require(info.channels in (1, 2), "AUDIO_CHANNELS",
              f"{path.name}: audio must have one or two channels (found {info.channels}).")
     _require(info.samplerate >= LIMITS["minimum_sample_rate_hz"],
-             "AUDIO_SAMPLE_RATE", "The fixed 1–15 kHz recipe requires a sample rate of at least 32000 Hz; audio is not resampled automatically.")
+             "AUDIO_SAMPLE_RATE", f"{path.name}: audio must be sampled at 16000 Hz or higher. Audio is not resampled automatically.")
     return info
 
 
@@ -146,12 +147,12 @@ def _audio_view(path, digest, scratch, *, segment, cancelled=None, source_info=N
     return path, info
 
 
-def _input_requirements(audio_files, source_channels):
+def _input_requirements(audio_files, source_channels, rate):
     formats = sorted({INPUT_FORMATS[path.suffix.lower()] for path in audio_files})
     return {"format": ", ".join(formats), "channels": [1, 2], "source_channels": sorted(source_channels),
             "analysis_channels": 1, "same_sample_rate_required": True,
             "minimum_sample_rate_hz": LIMITS["minimum_sample_rate_hz"],
-            "mfcc_logmel_frequency_band_hz": [1000, 15000],
+            "mfcc_logmel_frequency_band_hz": list(analysis_frequency_band(rate)),
             "automatic_resampling": False, "automatic_downmixing": 2 in source_channels, "stereo_mix": "mean_left_right",
             "automatic_bandpass_filtering": False,
             "capacity_note": "The engineering input limits are 5000 items and 2 GiB of audio including parent files. Small-scale acceptance does not establish performance at these limits."}
@@ -302,13 +303,14 @@ def _inspect(source_dir, scratch, cancelled=None):
     duplicates = {}
     for row in rows:
         duplicates.setdefault(row["decoded_pcm_sha256"], []).append(row["item_id"])
+    rate = rates.pop()
     plan = {"schema_version": "annotation-stage-a-plan-v1", "status": "validated_input",
             "item_count": len(rows), "total_duration_s": sum(r["duration_s"] for r in rows),
-            "sample_rate_hz": rates.pop(),
+            "sample_rate_hz": rate,
             "context_available_count": sum(r["context_kind"] == "source_parent" for r in rows),
             "audio_bytes": sum(v["bytes"] for v in audio_files.values()),
             "source_fingerprint": _hash(signature), "limits": copy.deepcopy(LIMITS),
-            "input_requirements": _input_requirements(audio_files, {info.channels for info in headers.values()}),
+            "input_requirements": _input_requirements(audio_files, {info.channels for info in headers.values()}, rate),
             "duplicate_pcm_groups": [v for v in duplicates.values() if len(v) > 1],
             "raw_recording_declarations": {"declared_items": sum(r["raw_recording_id"] is not None for r in rows),
                 "unknown_items": sum(r["raw_recording_id"] is None for r in rows),
@@ -401,7 +403,8 @@ def bandpass_metadata(settings, rate):
 def _versions(fingerprint, processing=None, *, feature_recipe=FEATURE_RECIPE):
     suffix = fingerprint[:20]
     audio_suffix = _hash({"source": fingerprint, "processing": processing})[:20] if processing else suffix
-    global_prefix = "stage-a-global-" if feature_recipe == LEGACY_FEATURE_RECIPE else "stage-a-global-contrast-v2-"
+    global_prefix = {LEGACY_FEATURE_RECIPE: "stage-a-global-", FEATURE_RECIPE: "stage-a-global-contrast-v2-",
+                     LOW_RATE_FEATURE_RECIPE: "stage-a-global-lowrate-v1-"}[feature_recipe]
     return {"material_version": "stage-a-material-" + audio_suffix,
             "boundary_version": "stage-a-frames-" + suffix,
             "feature_version": feature_recipe + ("-bandpass-" + _hash(processing)[:20] if processing else ""),
@@ -454,12 +457,18 @@ def _prepare_stage_a(source_dir, output_dir, progress, cancelled, plan_only, scr
     dataset, global_dir = output / "dataset", output / "global"
     dataset.mkdir(); (dataset / "parents").mkdir(); global_dir.mkdir()
     ids = [r["item_id"] for r in rows]
-    versions = _versions(plan["source_fingerprint"], processing)
+    sample_rate = plan["sample_rate_hz"]
+    recipe = LOW_RATE_FEATURE_RECIPE if sample_rate < FULL_BAND_MIN_RATE else FEATURE_RECIPE
+    versions = _versions(plan["source_fingerprint"], processing, feature_recipe=recipe)
+    band = analysis_frequency_band(sample_rate)
+    analysis = {"sample_rate_hz": sample_rate, "mfcc_logmel_frequency_band_hz": list(band),
+                "feature_version": versions["feature_version"]}
     _progress(progress, "features", "Initializing and extracting 105D and log-mel features", 0, len(rows))
     from .acoustics import audio_processor, config as feature_config, log_mel
 
     config = feature_config.Config()
-    config.audio.sample_rate = plan["sample_rate_hz"]
+    config.audio.sample_rate = sample_rate
+    config.audio.freq_min, config.audio.freq_max = band
     config.feature.feature_types = ["mfcc", "mfcc_delta", "spectral", "temporal", "amplitude"]
     processor = audio_processor.AudioProcessor(config)
     _require(processor.get_feature_names() == assistance.FEATURE_NAMES,
@@ -536,7 +545,7 @@ def _prepare_stage_a(source_dir, output_dir, progress, cancelled, plan_only, scr
         np.save(global_dir / (name + ".npy"), matrix, allow_pickle=False)
     _write(global_dir / "suggestions.json", payload)
     _write(output / "coordinator/prototype_mapping.json", mapping)
-    manifest = {"schema_version": "annotation-acoustics-input-v1", **versions,
+    manifest = {"schema_version": "annotation-acoustics-input-v1", **versions, "acoustic_analysis": analysis,
                 "feature_names": assistance.FEATURE_NAMES, "feature_item_ids": ids,
                 "global_fit_ids": ids, "items": items}
     source_paths = [Path(__file__), Path(__file__).with_name("annotation_source_registry.py"),
@@ -637,14 +646,23 @@ def _validate_stage_a(output_dir, scratch, cancelled=None):
         params = {k: processing.get(k) for k in ("low_hz", "high_hz", "order")}
         _require(processing == bandpass_metadata(params, frozen["sample_rate_hz"]),
                  "OUTPUT_VERSION", "The saved band-pass settings do not match the project sample rate.")
+    rate = frozen["sample_rate_hz"]
     feature_params = provenance["feature_parameters"]
     recipe = LEGACY_FEATURE_RECIPE
     if "spectral_contrast" in feature_params:
-        recipe = FEATURE_RECIPE
+        recipe = LOW_RATE_FEATURE_RECIPE if rate < FULL_BAND_MIN_RATE else FEATURE_RECIPE
         _require(feature_params["spectral_contrast"] == spectral_contrast_parameters(
                      frozen["sample_rate_hz"], feature_params["feature"]["n_fft"]),
                  "OUTPUT_VERSION", "The saved spectral contrast parameters do not match the feature recipe.")
     expected_versions = _versions(frozen["source_fingerprint"], processing, feature_recipe=recipe)
+    if "acoustic_analysis" in manifest or rate < FULL_BAND_MIN_RATE:
+        band = list(analysis_frequency_band(rate))
+        _require(recipe != LEGACY_FEATURE_RECIPE and
+                 manifest.get("acoustic_analysis") == {"sample_rate_hz": rate, "mfcc_logmel_frequency_band_hz": band,
+                                                       "feature_version": expected_versions["feature_version"]} and
+                 [feature_params["audio"]["freq_min"], feature_params["audio"]["freq_max"]] == band and
+                 feature_params["audio"]["sample_rate"] == rate,
+                 "OUTPUT_VERSION", "The saved analysis band or recipe does not match the native sample rate.")
     _require(provenance["input_versions"] == expected_versions and
              all(manifest.get(key) == value for key, value in expected_versions.items()),
              "OUTPUT_VERSION", "The frozen input versions do not match the saved feature recipe.")
@@ -700,6 +718,9 @@ def _validate_stage_a(output_dir, scratch, cancelled=None):
                 "decoded_pcm_sha256", "parent_sha256", "parent_pcm_identity", "segment_pcm_identity")} and
                 all(row[key] == source[key] for key in ("item_id", "source_clip_id", "source_frame_start", "source_frame_stop")),
                 "OUTPUT_MEDIA", "The filtered interval does not match its frozen source.")
+    # Keep the input policy originally recorded in v1.0.4 and earlier markers.
+    # Their frozen audio, feature identities and project summaries are immutable.
+    minimum_rate = LIMITS["minimum_sample_rate_hz"] if "acoustic_analysis" in manifest else FULL_BAND_MIN_RATE
     return {"status": "ready", "item_count": len(ids), "fit_item_count": len(ids),
             "candidate_clusters": len(payload["clusters"]), "unclustered_items": len(remaining),
             "fit_status": fit_status, "input_versions": provenance["input_versions"],
@@ -707,7 +728,9 @@ def _validate_stage_a(output_dir, scratch, cancelled=None):
             "source_fingerprint": frozen["source_fingerprint"], "preset_id": PRESET_ID,
             "sample_rate_hz": frozen["sample_rate_hz"], "total_duration_s": frozen["total_duration_s"],
             "context_available_count": frozen["context_available_count"],
-            "limits": copy.deepcopy(LIMITS), "input_requirements": {**frozen["input_requirements"],
+            **({"acoustic_analysis": manifest["acoustic_analysis"]} if "acoustic_analysis" in manifest else {}),
+            "limits": {**LIMITS, "minimum_sample_rate_hz": minimum_rate},
+            "input_requirements": {**frozen["input_requirements"], "minimum_sample_rate_hz": minimum_rate,
                 **({"automatic_bandpass_filtering": True} if processing else {})},
             **({"audio_preprocessing": processing} if processing else {}),
             "human_decisions_created": 0, "type_memberships_created": 0,

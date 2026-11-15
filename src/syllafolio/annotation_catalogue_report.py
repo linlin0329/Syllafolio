@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qsl, quote, urlsplit
 
 from .annotation_english import system_text
+from .annotation_analysis_metadata import analysis_rows
 
 SCHEMA_VERSION = "annotation-catalogue-readable-v1"
 AXIS_FIELDS = ("family_status", "family_id", "diagnostic_region", "component_status",
@@ -29,6 +30,33 @@ MEDIA_FIELDS = ("item_id", "type_id", "role", "in_scope", "wav_path", "spectrogr
                 "spectrogram_sha256", "source_clip_id", "raw_recording_id", "source_frame_start", "source_frame_stop",
                 "sample_rate_hz", "parent_audio_sha256", "pcm_sha256", "audio_processing", "display")
 ASSESSMENT_ID_FIELDS = ("assessment_job_id", "assessment_status", "stale_for_current", "assessment_snapshot_fingerprint")
+FORM_LABELS = {
+    "main": "Main form", "variant": "Variant", "candidate_form": "Candidate new form",
+    "not_assessed": "Not yet assessed", "unresolved": "Unresolved after review",
+    "not_applicable": "Not applicable", "not_recorded": "Status not recorded",
+    "other_recorded": "Other recorded status",
+}
+
+
+def _form_bucket(row):
+    value = (row.get("axes") or {}).get("form_status", row.get("form_status"))
+    if value is None or value == "":
+        return "not_recorded"
+    return value if value in FORM_LABELS else "other_recorded"
+
+
+def fine_form_summary(items):
+    """Count one saved form status per in-scope, family-assigned syllable."""
+    counts = dict.fromkeys(FORM_LABELS, 0)
+    scope_size = 0
+    for row in items:
+        if row.get("in_scope") is True:
+            scope_size += 1
+            if row.get("category") == "assigned":
+                counts[_form_bucket(row)] += 1
+    return {"scope_item_count": scope_size, "assigned_family_count": sum(counts.values()), "counts": counts}
+
+
 SUPPORT_FIELDS = ("family_id", "n_in_scope", "n_confirmed", "n_known_source", "n_unknown_source",
                   "n_source_groups", "max_source_share", "max_source_share_denominator", "source_counts", "eligible", "reasons")
 
@@ -288,6 +316,13 @@ def _assessment_html(document, asset_urls, *, standalone=False):
         return '<section id="assessment"><h2>Internal acoustic assessment</h2>' + intro + '</section>'
     if assessment.get("report_path"):
         intro += '<p>' + _link(assessment["report_path"], 'Full frozen assessment report and computation audit JSON', asset_urls) + '</p>'
+    if assessment.get("acoustic_analysis"):
+        rows = analysis_rows(assessment["acoustic_analysis"])
+        if "audio_preprocessing" in assessment:
+            preprocessing = assessment["audio_preprocessing"]
+            rows.append(("Import band-pass filter", f"{preprocessing['low_hz']:g}–{preprocessing['high_hz']:g} Hz"
+                         if preprocessing else "Off"))
+        intro += _table(["Assessment input", "Frozen value"], rows)
     coverage = report.get("coverage") or {}
     coverage_rows = [
         ('Syllables in declared scope', coverage.get("n_scope")), ('Eligible syllables', coverage.get("n_eligible")),
@@ -531,11 +566,38 @@ def _cover(document, mode, scope, items, scoped, examples):
                  f' · {len(media_ids)} example recordings ({len(outside_examples)} outside the scope)'
                  f' · <time datetime="{_e(timestamp)}">{_e(date)}</time> · Assessment: {_e(assessment_label)}</p>')
     parts.append('<nav aria-label="Report sections"><a href="#family-index">Families and examples</a>'
-                 '<a href="#scope">Scope and status</a><a href="#registers">Syllable records</a>'
+                 '<a href="#scope">Scope and status</a><a href="#fine-forms">Fine-form outcomes</a><a href="#registers">Syllable records</a>'
                  '<a href="#assessment">Internal assessment</a><a href="#provenance">Versions and files</a></nav></header>')
     return "".join(parts)
 
 
+
+
+def _fine_form_section(items, summary, asset_urls):
+    members = {status: [] for status in FORM_LABELS}
+    for row in items:
+        if row.get("in_scope") is True and row.get("category") == "assigned":
+            members[_form_bucket(row)].append(row["item_id"])
+    counts = summary["counts"]
+    parts = ['<section id="fine-forms"><h2>Fine-form outcomes</h2>',
+             f'<p>Denominator: <strong>{summary["assigned_family_count"]} family-assigned syllables</strong>'
+             f' among {summary["scope_item_count"]} syllables in this scope. Each assigned syllable counts once.</p>',
+             '<table><thead><tr><th>Fine-form status</th><th>Count</th><th>Syllables</th></tr></thead><tbody>']
+    for status, label in FORM_LABELS.items():
+        if status in {"not_applicable", "not_recorded", "other_recorded"} and not counts[status]:
+            continue
+        ids = members[status]
+        details = ('<details><summary>Show IDs</summary><p>' + ', '.join(_e(i) for i in ids)
+                   + '</p></details>') if ids else '—'
+        parts.append(f'<tr data-form-status="{status}"><th scope="row">{label}</th>'
+                     f'<td>{counts[status]}</td><td>{details}</td></tr>')
+    parts.append('</tbody></table><p>A candidate records a proposed distinction. An unresolved form records'
+                 ' an inspection that did not settle the form. Both keep the assigned family.</p>')
+    files = [("tables/fine_form_counts.csv", "Fine-form counts CSV"),
+             ("tables/scope_items.csv", "Individual syllable records")]
+    parts.append('<p>' + ' · '.join(_link(path, label, asset_urls) for path, label in files
+                                    if not asset_urls or path in asset_urls) + '</p></section>')
+    return "".join(parts)
 
 
 def render_html(document, asset_urls=None):
@@ -558,6 +620,12 @@ def render_html(document, asset_urls=None):
     body = _cover(document, mode, scope, items, scoped, examples)
     body += _family_directory(types, examples, filtered=bool(document.get("audio_preprocessing")), asset_urls=asset_urls)
     body += '<section id="scope"><h2>Declared scope and delivery status</h2>'
+    if document.get("acoustic_analysis"):
+        rows = analysis_rows(document["acoustic_analysis"])
+        limit = document.get("spectrogram_display", {}).get("frequency_max_hz_actual")
+        if limit is not None:
+            rows.append(("Example spectrogram display range", f"0–{limit:g} Hz"))
+        body += _table(["Project audio", "Frozen value"], rows)
     if document.get("audio_preprocessing"):
         params = document["audio_preprocessing"]
         body += (f'<p>Import band-pass filter: {_e(params["low_hz"])}–{_e(params["high_hz"])} Hz, '
@@ -588,6 +656,7 @@ def render_html(document, asset_urls=None):
         body += f'<p class="muted">The body previews only the first 100 in-scope syllables. See scope_items.csv for all {len(scoped)} items and all three-axis fields. The whole-task table also has an in_scope column.</p>'
     body += '<p>' + ' · '.join(_link(path, label, asset_urls) for path, label in (("tables/scope_items.csv", 'All members in this scope'), ("tables/items.csv", 'All task members (with in_scope)'), ("tables/unresolved.csv", 'In-scope family-unresolved list'), ("tables/form_unresolved.csv", 'Family assigned, form unresolved / unjudged'), ("tables/excluded.csv", 'In-scope exclusions'), ("tables/unfinished.csv", 'In-scope unfinished items'), ("tables/sources.csv", 'Original-recording declarations and evidence'))) + '</p>'
     body += '<p class="muted">Family dispositions follow frozen category values: assigned, unresolved, excluded and unreviewed. Unresolved or unjudged forms are listed separately in form_unresolved.csv; these items remain assigned and are not counted again as family-unresolved. Reason categories are operator-selected disposition codes, not free-text evidence of actual listening, and are not inserted into notes. Disposition notes may be empty; source and submission contract have separate columns. Missing legacy fields remain unrecorded. Disposition reasons and current three-axis evidence remain separate; categories or earlier batch notes do not substitute for current fine-review reasoning. The main JSON retains original fields and complete reasons.</p></section>'
+    body += _fine_form_section(items, fine_form_summary(items), asset_urls)
     body += _assessment_html(document, asset_urls)
     body += '<section id="provenance"><h2>Versions, files and review evidence</h2><p>An export is a frozen snapshot and does not update after label, source or definition changes. Export a new version from the application when needed. This package does not merge types, choose examples, rerun assessment or finish human work for you.</p><p>' + _link("catalogue.json", 'Original-value frozen catalogue JSON', asset_urls) + ' · ' + _link("README.md", 'Package files and interpretation limits', asset_urls) + '</p>'
     if document.get("audit_path"):
@@ -686,6 +755,14 @@ def write_catalogue_report(output_dir, document):
     write_csv("tables/types.csv", TYPE_FIELDS, _type_rows(document))
     write_csv("tables/items.csv", ITEM_FIELDS, items)
     write_csv("tables/scope_items.csv", ITEM_FIELDS, scoped)
+    summary = fine_form_summary(items)
+    if "fine_form_summary" in document and document["fine_form_summary"] != summary:
+        raise ValueError("Frozen fine-form counts do not match the scoped syllable records.")
+    write_csv("tables/fine_form_counts.csv",
+              ("form_status", "label", "count", "assigned_family_count", "scope_item_count"),
+              ({"form_status": status, "label": label, "count": summary["counts"][status],
+                "assigned_family_count": summary["assigned_family_count"], "scope_item_count": summary["scope_item_count"]}
+               for status, label in FORM_LABELS.items()))
     write_csv("tables/unresolved.csv", ITEM_FIELDS, [r for r in scoped if _is_unresolved(r)])
     write_csv("tables/form_unresolved.csv", ITEM_FIELDS, [r for r in scoped if _is_form_unresolved(r)])
     write_csv("tables/excluded.csv", ITEM_FIELDS, [r for r in scoped if _is_excluded(r)])
@@ -710,7 +787,9 @@ After extraction, open report.html. Use its family index to jump to diagnostic c
 - report.html and report.css: readable catalogue, local styling, human examples, scope, dispositions and assessment. Missing definitions, unknown forms and not-estimable results are retained.
 - tables/types.csv: all families and leaves, with task_member_count and scope_member_count in separate columns.
 - tables/items.csv: all task syllables; in_scope identifies this delivery scope; family_name and leaf_name accompany the stable type IDs. tables/scope_items.csv contains only the selected scope. disposition_reason retains the original batch disposition note; reason_code is the operator-selected reason category, and reason_code_label is its display label. A category is not free-text evidence of listening and is never inserted into notes. reason_source describes only the batch disposition reason: operator_note means an operator note, operator_code an operator-selected category, and not_provided no note supplied. submission_contract_version is the saved submission contract. Legacy records without these fields remain blank; listening or new provenance is not inferred. axes_reason is current valid three-axis reasoning; reason is the compatibility main reason, preferring current axes_reason without replacing separate columns.
-- tables/unresolved.csv, excluded.csv and unfinished.csv: in-scope family-unresolved, excluded and unfinished items, following category unresolved/excluded/unreviewed. tables/form_unresolved.csv separately lists assigned items with unresolved or unjudged form; they retain family membership and must not be added again to mutually exclusive disposition totals.
+- tables/unresolved.csv, excluded.csv and unfinished.csv: in-scope family-unresolved, excluded and unfinished items, following category unresolved/excluded/unreviewed.
+- tables/fine_form_counts.csv: one row per fine-form outcome among family-assigned syllables in the declared scope. Each belongs to exactly one row. assigned_family_count gives the denominator; scope_item_count includes all dispositions. Match these counts to tables/scope_items.csv by category=assigned and form_status. A missing legacy form_status appears as not_recorded in the summary, unexpected stored values as other_recorded; original statuses remain in the item tables.
+- tables/form_unresolved.csv retains the combined list of family-assigned items with not_assessed, unresolved, candidate_form or missing status. Use the form_status column to distinguish unexamined forms, forms unresolved after review and candidate forms proposed for further definition. This list overlaps the assigned family totals.
 - tables/sources.csv: declared original recordings and evidence, retaining unknowns. Grouping does not prove individual-bird independence.
 - tables/examples.csv: each type × syllable × example-role registration and media path. A syllable may have several roles while its media is stored once.
 - tables/assessment_metrics.csv, assessment_support.csv, assessment_per_family.csv, assessment_repeats.csv, assessment_predictions.csv and assessment_confusion.csv: overall metrics, support, per-family recall, repeat metrics, all out-of-fold predictions and the complete mean normalized confusion matrix (rows = human families, columns = predicted families, including zeros). Without a full report, only column headers are retained.

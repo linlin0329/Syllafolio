@@ -77,3 +77,14 @@ class FinalCheckActions(unittest.TestCase):
         self.state["batch_review"]["reviews"]["r"]["closed"] = True
         target, = self.view([criteria])["gaps"][0]["targets"]
         self.assertEqual((target["kind"], target["id"]), ("directed", "g"))
+
+    def test_superseded_open_pool_directs_to_actual_recovery_scope(self):
+        self.state["batch_review"].update(pool={"active_ids": ["b"]})
+        self.state["batch_review"]["reviews"]["old"] = {"stage": "pool", "read_only": True, "closed": False}
+        for row in self.rows:
+            row.update(batch_review_id="old", closure_confirmation_required=True)
+        gap = self.view([{"code": "BATCH_REVIEW_OPEN", "review_ids": ["old"]}])["gaps"][0]
+        self.assertEqual({(t["kind"], t["id"]) for t in gap["targets"]}, {("pool","pool"), ("family","g")})
+        self.assertIn("checkpoint", gap["message"])
+        self.assertIn("c", gap["message"])
+        self.assertEqual(self.controller.resolve_location("family", "g")["kind"], "family")

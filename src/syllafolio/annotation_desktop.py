@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMenu,
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit,
     QProgressBar, QPushButton, QScrollArea, QSplitter, QTreeWidget, QTreeWidgetItem,
-    QSizePolicy, QToolButton, QVBoxLayout, QWidget,
+    QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
 from . import __version__
@@ -41,13 +41,13 @@ from .annotation_desktop_review_tree import ReviewTree
 from .annotation_desktop_theme import DESKTOP_STYLE, apply_light_theme
 from .annotation_desktop_diagnostics import DesktopDiagnostics
 from .annotation_desktop_stage_a import inspect_input
-from .annotation_desktop_stage_a_ui import InputInspectionDialog, StageAWorkspaceDialog
+from .annotation_desktop_stage_a_ui import InputInspectionDialog, StageAWorkspaceDialog, import_audio_summary
 from .annotation_desktop_organization import OrganizationControllerError
 from .annotation_desktop_family_review import FamilyReviewController, FAMILY_PREPARATION_LABELS
 from .annotation_family_acoustics import family_audition_route
 from .annotation_desktop_family_audition import FamilyAuditionPreview, family_review_conflicts
 from .annotation_desktop_fine_review import FineReviewDialog
-from .annotation_desktop_pool_review import PoolReviewController, PoolReviewDialog
+from .annotation_desktop_pool_review import PoolReviewController, PoolReviewDialog, pool_guidance, unconfirmed_pool_departures
 from .annotation_desktop_final_review import FinalReviewDialog
 from .annotation_desktop_catalogue import CatalogueReviewDialog
 from .annotation_desktop_sources import SourceRegistryDialog
@@ -57,6 +57,7 @@ from .annotation_desktop_review_media import DisplayController, DisplayControlsW
 from .annotation_desktop_page_settings import ReviewPageSettings
 from .annotation_desktop_interval_import import IntervalImportDialog
 from .annotation_desktop_project_picker import ProjectFolderDialog
+from .annotation_desktop_welcome import UserGuideDialog, WelcomePage
 
 
 DISPOSITIONS = [
@@ -100,16 +101,37 @@ class TaskThread(QThread):
 class ProjectContractDialog(QDialog):
     """创建时明确用途和操作者；不从系统身份推断，不启用研究条件。"""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, audio_summary=None):
         super().__init__(parent)
-        self.setWindowTitle("New project identity")
+        self.setWindowTitle("Create project")
+        self.setMinimumWidth(420)
         layout = QVBoxLayout(self)
+        if audio_summary:
+            summary = QLabel(audio_summary)
+            summary.setObjectName("projectAudioSummary")
+            summary.setWordWrap(True)
+            layout.addWidget(summary)
         form = QFormLayout()
         self.purpose = QComboBox()
         self.purpose.addItem("Daily annotation", "daily_annotation")
         self.purpose.addItem("Engineering example / validation", "engineering")
         self.operator = QLineEdit()
-        self.operator.setPlaceholderText("Explicit local operator ID")
+        self.operator.setObjectName("projectOperator")
+        self.operator.setPlaceholderText("Your name or local operator ID")
+        form.addRow("Operator", self.operator)
+        layout.addLayout(form)
+        self.operator_note = QLabel()
+        self.operator_note.setWordWrap(True)
+        layout.addWidget(self.operator_note)
+        self.advanced = QPushButton("Advanced settings…")
+        self.advanced.setObjectName("projectAdvanced")
+        self.advanced.setCheckable(True)
+        self.advanced.setAutoDefault(False)
+        layout.addWidget(self.advanced, 0, Qt.AlignmentFlag.AlignLeft)
+        self.advanced_panel = QWidget()
+        self.advanced_panel.setObjectName("projectAdvancedOptions")
+        advanced_form = self.advanced_form = QFormLayout(self.advanced_panel)
+        advanced_form.setContentsMargins(0, 0, 0, 0)
         self.budget = QDoubleSpinBox()
         self.budget.setDecimals(0)
         self.budget.setRange(1, 31536000)
@@ -119,11 +141,14 @@ class ProjectContractDialog(QDialog):
         self.policy.setWordWrap(True)
         self.problem = QLabel()
         self.problem.setStyleSheet("color:#a34838;")
-        form.addRow("Purpose", self.purpose)
-        form.addRow("Operator ID", self.operator)
-        form.addRow("Engineering budget", self.budget)
-        layout.addLayout(form)
-        layout.addWidget(self.policy)
+        self.problem.hide()
+        self.operator.textEdited.connect(lambda: self.problem.hide())
+        advanced_form.addRow("Project purpose", self.purpose)
+        advanced_form.addRow("Engineering budget", self.budget)
+        advanced_form.addRow(self.policy)
+        layout.addWidget(self.advanced_panel)
+        self.advanced_panel.hide()
+        self.advanced.toggled.connect(self.advanced_panel.setVisible)
         layout.addWidget(self.problem)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._accept_contract)
@@ -131,12 +156,16 @@ class ProjectContractDialog(QDialog):
         layout.addWidget(buttons)
         self.purpose.currentIndexChanged.connect(self._purpose_changed)
         self._purpose_changed()
+        self.operator.setFocus()
 
     def _purpose_changed(self):
         daily = self.purpose.currentData() == "daily_annotation"
         self.budget.setEnabled(not daily)
-        self.policy.setText("No research deadline. Listening and annotation remain your decisions."
-                            if daily else "Engineering records remain engineering evidence; this is not a human experiment.")
+        self.advanced_form.setRowVisible(self.budget, not daily)
+        self.advanced.setText("Advanced settings…" if daily else "Advanced settings · Engineering")
+        self.operator_note.setText(f"{self.purpose.currentText()} project. Saved decisions will identify this operator.")
+        self.policy.setText("Daily annotation has no time limit." if daily else
+                            "This project will record engineering validation work.")
         if daily and self.operator.text() == "local-engineering-operator":
             self.operator.clear()
         elif not daily and not self.operator.text():
@@ -149,6 +178,8 @@ class ProjectContractDialog(QDialog):
     def _accept_contract(self):
         if not self.operator.text().strip():
             self.problem.setText("Enter the operator ID before creating a project.")
+            self.problem.show()
+            self.operator.setFocus()
             return
         self.accept()
 
@@ -208,6 +239,7 @@ class MainWindow(QMainWindow):
         self._task_issue_seen = set()
         self.project_details_dialog = None
         self._project_picker = None
+        self._guide_dialog = None
         self._pending_refresh = False
         self._sampling_pending = False
         self._cancel_requests = None
@@ -734,7 +766,11 @@ class MainWindow(QMainWindow):
         info.hide()
         self.main_splitter.addWidget(right)
         self.main_splitter.setSizes([310, 1090])
-        root.addWidget(self.main_splitter, 1)
+        self.workspace_stack = QStackedWidget()
+        self.welcome_page = WelcomePage(self.import_button, self.interval_import_action, self.open_button)
+        self.workspace_stack.addWidget(self.welcome_page)
+        self.workspace_stack.addWidget(self.main_splitter)
+        root.addWidget(self.workspace_stack, 1)
         progress = QHBoxLayout()
         self.progress = QProgressBar()
         self.progress.setObjectName("operationProgress")
@@ -751,17 +787,23 @@ class MainWindow(QMainWindow):
         self.status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.status_label.setWordWrap(True)
         self.statusBar().addWidget(self.status_label, 1)
-        help_action = QAction("About this development preview…", self)
-        help_action.setShortcut(QKeySequence.StandardKey.HelpContents)
-        help_action.triggered.connect(lambda: QMessageBox.information(self, "Syllafolio development preview",
-            "Native syllable review uses the existing project and annotation protocol.\n"
-            "Research mode and model calls are disabled. Listening, type criteria and final judgments remain the operator's responsibility.\n"
-            "A development preview does not replace an accepted release or verify scientific efficacy."))
+        guide = self._menu_action(self.help_menu, "User guide…", "userGuide", self._show_user_guide)
+        guide.setShortcut(QKeySequence.StandardKey.HelpContents)
         self.project_details_action = self._menu_action(self.help_menu, "Project details…", "projectDetailsAction", self._show_project_details)
-        self.help_menu.addAction(help_action)
+        self.help_menu.addSeparator()
+        self._menu_action(self.help_menu, "About Syllafolio…", "aboutSyllafolio",
+                          lambda: QMessageBox.about(self, "About Syllafolio",
+                              f"Syllafolio {__version__}\n\nBird syllable annotation, acoustic review and catalogue export."))
         self.tasks_action = self._menu_action(self.view_menu, "Tasks…", "projectTasksAction", self._show_tasks)
         self.display_action = self._menu_action(self.view_menu, "Display settings…", "displaySettings", self._show_review_display)
         self._update_display_info()
+
+    def _show_user_guide(self):
+        if self._guide_dialog is None:
+            self._guide_dialog = UserGuideDialog(self)
+        self._guide_dialog.show()
+        self._guide_dialog.raise_()
+        return self._guide_dialog
 
     def eventFilter(self, watched, event):
         slots = getattr(self, "slot_list", None)
@@ -893,6 +935,8 @@ class MainWindow(QMainWindow):
         prerequisites = list(dict.fromkeys(prerequisite_names.get(code, "Inspect the outstanding workspace requirements")
             for row in navigation.get("stages", []) for code in row.get("blockers", [])))
         preprocessing = self.project.metadata.get("preparation_summary", {}).get("audio_preprocessing")
+        from .annotation_analysis_metadata import analysis_rows
+        acoustic_details = [f"{label}: {value}" for label, value in analysis_rows(self.project.service.acoustic_analysis)]
         filter_details = ()
         if isinstance(preprocessing, dict) and all(key in preprocessing for key in ("low_hz", "high_hz", "order")):
             filter_details = (f"Import band-pass filter: {preprocessing['low_hz']:g}–{preprocessing['high_hz']:g} Hz",
@@ -905,7 +949,8 @@ class MainWindow(QMainWindow):
             f"Evidence source: {contract.get('evidence_source', contract.get('source', 'Not recorded'))}",
             f"Record kind: {contract.get('record_kind', 'Not recorded')}", "Research: disabled", "Model calls: disabled",
             "Workflow status: " + workflow_names.get(navigation.get("current_stage", "A"), "Review"),
-            "Workflow prerequisites: " + ("; ".join(prerequisites) if prerequisites else "None outstanding"), *filter_details))
+            "Workflow prerequisites: " + ("; ".join(prerequisites) if prerequisites else "None outstanding"),
+            *acoustic_details, *filter_details))
 
     def _show_project_details(self):
         if not self.project:
@@ -971,13 +1016,8 @@ class MainWindow(QMainWindow):
             blockers.append("This review is read-only; saved outcomes are retained.")
         elif review.get("status") == "failed":
             blockers.append("Review preparation failed. Open Tasks for the error and next step.")
-        if self.selected_group == "pool":
-            pool = batch.get("pool", {})
-            if review.get("pool_refresh_required") and pool.get("active_ids"):
-                action = "Prepare group" if review.get("closed") else "More → Prepare again…"
-                blockers.append(f"The current pool has changed. Use {action} to review the updated pool.")
-            elif not review and not pool.get("active_ids") and batch.get("organization") and not pool.get("can_prepare"):
-                blockers.append("Finish the outstanding reviews before recording an empty-pool skip.")
+        if self.selected_group == "pool" and not (self.state.get("deadline_locked") or self._sampling_pending):
+            blockers.append(pool_guidance(batch, review))
         self.header_blockers.setText(" ".join(blockers))
         self.header_blockers.setVisible(bool(blockers))
 
@@ -1060,7 +1100,7 @@ class MainWindow(QMainWindow):
             "FAMILY_TITLE_CONFLICT": "Another family already uses that name. Choose a different name.",
             "FAMILY_TITLE_UNCHANGED": "The family already has that name.",
             "REVISION_CONFLICT": "The project changed. Refresh and review the saved records before retrying.",
-            "BATCH_FIRST_PASS_PENDING": "Finish every candidate group's first pass before pooled review.",
+            "BATCH_FIRST_PASS_PENDING": "This action requires complete first-pass coverage. You can still review unlocked members of the current pool.",
             "BATCH_POOL_IN_PROGRESS": "Continue the existing pooled review before preparing another one.",
             "BATCH_FAMILY_PENDING": "Complete current family reviews before preparing the pool.",
             "BATCH_SCOPE_STALE": "The review scope is stale. Prepare a current version before saving.",
@@ -1214,6 +1254,9 @@ class MainWindow(QMainWindow):
     def _set_enabled(self):
         opened = self.project is not None
         available = not self._busy and self._close_coordinator.state == "open" and not self._sampling_pending
+        self.workspace_stack.setCurrentWidget(self.main_splitter if opened else self.welcome_page)
+        self.navigation_label.setVisible(opened)
+        self.welcome_page.setEnabled(available)
         self.import_button.setEnabled(available)
         self.interval_import_action.setEnabled(available)
         if self._interval_import_dialog is not None:
@@ -1364,7 +1407,7 @@ class MainWindow(QMainWindow):
             str(base / ("SyllafolioProject-" + uuid.uuid4().hex[:6])), "Project directory (*)")
         if not destination:
             return
-        contract = ProjectContractDialog(self)
+        contract = ProjectContractDialog(self, audio_summary=import_audio_summary(dialog.preview.rate, dialog.preview.bandpass))
         if contract.exec() != QDialog.DialogCode.Accepted:
             return
         selection = dialog.take_selection()
@@ -1442,7 +1485,8 @@ class MainWindow(QMainWindow):
             self._status("Input inspected read-only; import was not requested.")
             return
         bandpass = dialog.bandpass_settings()
-        contract = ProjectContractDialog(self)
+        rate = view["summary"]["sample_rate_hz"]
+        contract = ProjectContractDialog(self, audio_summary=import_audio_summary(rate, bandpass))
         if contract.exec() == QDialog.DialogCode.Accepted:
             options = contract.options()
             options["bandpass"] = bandpass
@@ -1722,6 +1766,9 @@ class MainWindow(QMainWindow):
         elif kind == "tasks":
             self._show_tasks()
             dialog = self.task_dialog
+        elif kind == "family":
+            self._show_family_reviews(ident)
+            return
         elif kind in {"group", "pool"}:
             self.open_candidate_group("pool" if kind == "pool" else ident)
             return
@@ -1850,7 +1897,7 @@ class MainWindow(QMainWindow):
             members = family_row.get("member_ids", [])
             tooltip = (FAMILY_PREPARATION_LABELS[family_audition_route(len(members))]
                        if members else "Assign at least one syllable to this family first.")
-        self.prepare_button.setToolTip(tooltip)
+        self.prepare_button.setToolTip(pool_guidance(batch, review) if pool else tooltip)
         self.prepare_button.setVisible(bool(new_scope))
         self.prepare_button.setEnabled(bool(new_scope and available and not empty_family and can_start_pool))
         can_finish = review.get("status") == "ready" and not any(review.get(k) for k in
@@ -1869,7 +1916,9 @@ class MainWindow(QMainWindow):
         pool_repeat = pool and review.get("pool_refresh_required") and not review.get("closed") and not empty_pool
         can_repeat = (candidate and organized or family_repeat or pool_repeat) and bool(review) and review.get("status") not in ACTIVE
         self.prepare_again_action.setVisible(bool(can_repeat))
-        self.prepare_again_action.setEnabled(bool(can_repeat and available))
+        finish_exclusions = pool_repeat and "discard" in unconfirmed_pool_departures(batch, review)
+        self.prepare_again_action.setEnabled(bool(can_repeat and available and not finish_exclusions))
+        self.prepare_again_action.setToolTip("Finish the current round to confirm its exclusions first." if finish_exclusions else "")
         can_use_exception = ((candidate or pool) and organized or ordinary_family) and review.get("direct_exception", {}).get("allowed", False)
         self.exception_action.setVisible(bool(can_use_exception))
         self.exception_action.setEnabled(bool(can_use_exception and available))
@@ -2235,9 +2284,12 @@ class MainWindow(QMainWindow):
     def _update_display_info(self):
         value = self.display_controller.snapshot()
         settings = value["settings"]
+        rate = self.project.dataset.sample_rate_hz if self.project is not None else None
+        limit_khz = value["frequency_max_hz"] / 1000
+        band = f"0–{min(limit_khz, rate / 2000):g} kHz" if rate else f"up to {limit_khz:g} kHz"
         normalization = "per-syllable peak" if value["normalization"] == "per_item" else "whole-page peak"
         self.display_info.setText(f"Display: periodic Hann {settings['window_samples']} / hop {settings['hop_samples']} / "
-            f"FFT {value['fft_samples']} · 0–16 kHz · {settings['dynamic_range_db']:g} dB · {normalization}. "
+            f"FFT {value['fft_samples']} · {band} · {settings['dynamic_range_db']:g} dB · {normalization}. "
             "Colour is not absolute loudness. Machine groups do not define human families.")
         self.display_action.setToolTip(self.display_info.text())
 
@@ -2487,7 +2539,8 @@ class MainWindow(QMainWindow):
                  for page in row.get("pages", [])])
         signature = _hash({"organization": (batch.get("organization") or {}).get("organization_id"),
             "groups": [(g["group_id"], g.get("label"), len(g["item_ids"]), review_signature(g["group_id"])) for g in groups],
-            "pool": (len(batch.get("pool", {}).get("active_ids", [])), review_signature("pool")),
+            "pool": (len(batch.get("pool", {}).get("active_ids", [])), review_signature("pool"),
+                     pool_guidance(batch, self._review_by_id(self._scope_review_id("pool")))),
             "families": [(f["family_id"], f.get("title"), f.get("member_count", len(f.get("member_ids", []))),
                           review_signature("family:" + f["family_id"])) for f in families]})
         if signature != self._queue_signature:
@@ -2512,9 +2565,14 @@ class MainWindow(QMainWindow):
                     row.setData(0, Qt.ItemDataRole.UserRole, {"kind": kind, "id": ident})
                     if kind == "family":
                         row.setFlags(row.flags() | Qt.ItemFlag.ItemIsEditable)
-                    row.setToolTip(0, key)
-                    row.setToolTip(2, json.dumps(system_fields({k: review.get(k) for k in
-                        ("review_id", "status", "closed", "scope_stale_reason", "read_only_reason", "error")}), ensure_ascii=False))
+                    if key == "pool":
+                        hint = pool_guidance(batch, review)
+                        for column in range(3):
+                            row.setToolTip(column, hint)
+                    else:
+                        row.setToolTip(0, key)
+                        row.setToolTip(2, json.dumps(system_fields({k: review.get(k) for k in
+                            ("review_id", "status", "closed", "scope_stale_reason", "read_only_reason", "error")}), ensure_ascii=False))
                     self.group_list.addTopLevelItem(row) if parent is None else parent.addChild(row)
                     cluster_numbers = {}
                     for index, page in enumerate(review.get("pages", []), 1):
@@ -2908,6 +2966,8 @@ class MainWindow(QMainWindow):
         display = self.display_controller.snapshot()
         empty = not scope["current_pool_ids"]
         if not (scope["can_refreeze"] if refreeze else scope["can_prepare"]):
+            if refreeze and scope["unconfirmed_departed_exclusions"]:
+                raise ValueError("Finish this pool round to confirm its exclusions first.")
             message = " ".join(row["message"] for row in scope["blockers"])
             raise ValueError(message or "Inspect Pool details before preparing the current pool.")
         if scope["requires_reopen_reason"] and not reason and interactive:
@@ -3052,6 +3112,9 @@ class MainWindow(QMainWindow):
             text = ""
         elif lock := self._review().get("item_locks", {}).get(self.selected_item_id):
             text = f"{self.selected_item_id}: {lock['message']}"
+        elif (self.selected_group == "pool" and self._page and
+              all(i in self._review().get("item_locks", {}) for i in self._page["item_ids"])):
+            text = "This page is available for listening. Select a syllable to see what is blocking its save."
         elif (self._page and not self._page_submission_ids() and not self.current_family.currentData()
                 and not all(self._draft_base.get(item) for item in self._page["item_ids"])):
             text = "Choose Current human family to preview unsaved defaults. Only Save writes outcomes."

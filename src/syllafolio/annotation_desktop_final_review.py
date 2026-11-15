@@ -130,11 +130,36 @@ def _gap_rows(state, items):
                 if key in types:
                     add("type", key, "Open type card · " + type_label(key))
         elif code in {"BATCH_FAMILY_PENDING", "BATCH_REVIEW_OPEN"}:
+            unreachable = []
             for key in gap.get("review_ids", []):
+                source = reviews.get(key, {})
+                if (code == "BATCH_REVIEW_OPEN" and source.get("stage") == "pool"
+                        and not source.get("closed") and source.get("read_only")):
+                    # A replacement pool can no longer edit or close this round.
+                    # Its assigned members can receive an explicit, current family
+                    # review; members still in the pool belong in the current round.
+                    scope_ids = set(state.get("completion", {}).get("scope_ids", items))
+                    for row in state.get("items", []):
+                        item = row["item_id"]
+                        if (item not in scope_ids or row.get("batch_review_id") != key
+                                or not row.get("closure_confirmation_required")):
+                            continue
+                        family = next((fid for fid, t in types.items()
+                                       if t.get("parent_type_id") is None and item in t.get("member_ids", [])), None)
+                        if family is not None:
+                            add("family", family, "Review current family · " + type_label(family))
+                        elif item in batch.get("pool", {}).get("active_ids", []):
+                            add("pool", "pool", "Open global pool")
+                        else:
+                            gid = next((gid for gid, g in groups.items() if item in g.get("item_ids", [])), None)
+                            if gid is not None:
+                                add("group", gid, "Review candidate group · " + (groups[gid].get("label") or gid))
+                            else:
+                                unreachable.append(item)
+                    continue
                 add_round(key)
                 # An assignment can still point at its closed source round
                 # while a replacement round or a later fine review needs closure.
-                source = reviews.get(key, {})
                 if source.get("closed"):
                     if source.get("group_id") in groups:
                         gid = source["group_id"]
@@ -180,6 +205,10 @@ def _gap_rows(state, items):
                 if key in items:
                     add(kind, key, "Review " + key)
         message = system_text(gap.get("message", ""))
+        if code == "BATCH_REVIEW_OPEN" and unreachable:
+            message += (" Excluded syllables from an unfinished earlier pool round have no current review target: "
+                        + ", ".join(sorted(unreachable)) + ". A label checkpoint or backup made before that round "
+                        "was replaced can be used to return to it. Review restore effects before proceeding.")
         task = {"code": code, "title": _GAP_TITLES.get(code, message),
                 "message": message, "targets": list(targets.values())}
         if code in {"TYPE_DEFINITIONS", "STALE_TYPE_DEFINITIONS"}:

@@ -43,6 +43,12 @@ def _sample_rate(value):
     return rate
 
 
+def suggested_high_hz(sample_rate):
+    """Suggested import filter cutoff in the control's 0.1 Hz increments."""
+    from .config import analysis_frequency_band
+    return round(analysis_frequency_band(sample_rate)[1], 1)
+
+
 def validate_bandpass(settings, sample_rate):
     """Return None for off, or a new normalized {low_hz, high_hz, order} dict."""
     rate = _sample_rate(sample_rate)

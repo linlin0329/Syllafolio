@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .annotation_assistant_contracts import canonical_hash, require
 from .annotation_acoustics import _sha
+from .annotation_analysis_metadata import frozen_analysis
 from .annotation_manual_protocol import (
     ManualAnnotationStateStore, REVIEW_CHECKS, COMPLETION_CHECKS, completion_report, item_projection,
     issue_projection,
@@ -44,7 +45,10 @@ class ManualAnnotationService(AnnotationService):
         store = store or ManualAnnotationStateStore(Path(work_dir) / "state.sqlite3")
         try:
             super().__init__(dataset_dir, work_dir, store=store, **kwargs)
-            self.audio_preprocessing = json.loads((self.dataset_dir / "manifest.json").read_bytes()).get("audio_preprocessing")
+            manifest = json.loads((self.dataset_dir / "manifest.json").read_bytes())
+            self.audio_preprocessing = manifest.get("audio_preprocessing")
+            self.acoustic_analysis = frozen_analysis(manifest.get("acoustic_analysis"), self.dataset.sample_rate_hz,
+                                                     self.dataset.input_versions["feature_version"])
             self.batch = BatchReviewService(self)
             self.batch.recover()
             self.material_origin = classify_material(

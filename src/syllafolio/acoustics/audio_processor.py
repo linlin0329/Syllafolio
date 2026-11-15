@@ -5,7 +5,7 @@ import numpy as np
 import librosa
 from skimage.transform import resize
 
-from .config import Config, spectral_contrast_parameters
+from .config import Config, FULL_BAND_MIN_RATE, analysis_frequency_band, spectral_contrast_parameters
 
 
 class AudioProcessor:
@@ -45,6 +45,9 @@ class AudioProcessor:
         
         cfg = self.config.feature
         audio_cfg = self.config.audio
+        fmax = audio_cfg.freq_max
+        if sr < FULL_BAND_MIN_RATE:
+            fmax = min(fmax, analysis_frequency_band(sr)[1])
         
         # 检查波形长度
         if len(waveform) < cfg.n_fft:
@@ -61,7 +64,7 @@ class AudioProcessor:
                     y=waveform, 
                     sr=sr,
                     fmin=audio_cfg.freq_min,
-                    fmax=audio_cfg.freq_max,
+                    fmax=fmax,
                     frame_length=cfg.n_fft,
                     hop_length=cfg.hop_length,
                     fill_na=0.0
@@ -128,7 +131,7 @@ class AudioProcessor:
                 n_fft=cfg.n_fft,
                 hop_length=cfg.hop_length,
                 fmin=audio_cfg.freq_min,
-                fmax=audio_cfg.freq_max
+                fmax=fmax
             )
             # 计算每个 MFCC 系数的均值和标准差
             mfcc_mean = np.mean(mfcc, axis=1)
@@ -144,7 +147,7 @@ class AudioProcessor:
                 n_fft=cfg.n_fft,
                 hop_length=cfg.hop_length,
                 fmin=audio_cfg.freq_min,
-                fmax=audio_cfg.freq_max
+                fmax=fmax
             )
             # 一阶差分 - 动态调整 width 以适应短音节
             n_frames = mfcc.shape[1]
@@ -226,7 +229,7 @@ class AudioProcessor:
                 n_fft=cfg.n_fft,
                 hop_length=cfg.hop_length,
                 fmin=audio_cfg.freq_min,
-                fmax=audio_cfg.freq_max
+                fmax=fmax
             )
             
             if cfg.use_pcen:

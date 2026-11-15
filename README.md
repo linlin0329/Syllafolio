@@ -8,10 +8,10 @@ These ten syllables come from recordings of Eurasian tree sparrows (*Passer mont
 
 ## Install on Windows x64
 
-Open the [Syllafolio v1.0.4 Windows release](https://github.com/linlin0329/Syllafolio/releases/tag/v1.0.4). Download **Syllafolio-Setup-1.0.4-x64.exe** and compare its SHA-256 with the entry in **SHA256SUMS.txt**.
+Open the [Syllafolio v1.0.5 Windows release](https://github.com/linlin0329/Syllafolio/releases/tag/v1.0.5). Download **Syllafolio-Setup-1.0.5-x64.exe** and compare its SHA-256 with the entry in **SHA256SUMS.txt**.
 
 ```powershell
-Get-FileHash -Algorithm SHA256 .\Syllafolio-Setup-1.0.4-x64.exe
+Get-FileHash -Algorithm SHA256 .\Syllafolio-Setup-1.0.5-x64.exe
 ```
 
 Double-click the installer and choose **Install**. Open **Syllafolio** from the desktop shortcut or the Start menu. If you prefer to keep the desktop clear, uncheck **Create a desktop shortcut** before installing. The installation is for the current Windows account. You can also download **Syllafolio-Windows-x64.zip**, extract the whole folder and double-click `Start.cmd`.
@@ -46,9 +46,11 @@ Under **Family reviews → Prepare group**, families with 1–10 members play in
 
 See the [user guide](tools/distribution/USER_GUIDE.md) for type definitions, checkpoints, source declarations and internal assessment.
 
-Both input routes accept mono or stereo WAV, FLAC, MP3, Ogg Vorbis and AIFF (`.aif`/`.aiff`) at 32,000 Hz or higher. For stereo files, Syllafolio averages the left and right channels before optional filtering, playback and feature extraction. It keeps the original sample rate and interval boundaries. Mono and stereo files can share a batch if their sample rates match. Each syllable can be up to 30 seconds long.
+Both input routes accept mono or stereo WAV, FLAC, MP3, Ogg Vorbis and AIFF (`.aif`/`.aiff`) at 16,000 Hz or higher. For stereo files, Syllafolio averages the left and right channels before optional filtering, playback and feature extraction. It keeps the original sample rate and interval boundaries. Mono and stereo files can share a batch if their sample rates match. Each syllable can be up to 30 seconds long.
 
-Both new-project routes offer an optional **Band-pass filter**, off by default. Its adjustable defaults are **500–15000 Hz**, Butterworth order **4**. When enabled, the complete source is filtered before intervals are cut; project audition and features use that filtered PCM. Original input files remain unchanged. See the user guide before choosing preprocessing settings.
+At sample rates from 16 kHz to below 32 kHz, the MFCC and log-mel frequency band runs from 1000 Hz to 15/32 of the native sample rate. At 16 kHz this is 1000–7500 Hz, and the maximum spectrogram frequency is 8000 Hz. Spectral contrast uses lower octave boundaries. At 32 kHz and above the existing 1000–15000 Hz feature recipe is preserved.
+
+Both new-project routes offer an optional **Band-pass filter**, off by default. Its adjustable defaults are **500–7500 Hz at 16 kHz** and **500–15000 Hz at 32 kHz and above**, Butterworth order **4**. When enabled, the complete source is filtered before intervals are cut; project audition and features use that filtered PCM. Original input files remain unchanged. See the user guide before choosing preprocessing settings.
 
 ## Run the source checkout
 

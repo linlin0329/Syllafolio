@@ -6,7 +6,7 @@ import copy
 import json
 import uuid
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QSignalBlocker, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
     QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from .annotation_desktop_organization import OrganizationController
+from .annotation_desktop_pool_review import POOL_ORDER_HINT
 
 
 def _json(value):
@@ -56,19 +57,31 @@ def _summary_text(view):
     summary, sources = view.get("summary", {}), view.get("sources", {})
     counts = sources.get("counts", {})
     sidecar = summary.get("has_sidecar")
+    band = view.get("input_requirements", {}).get("mfcc_logmel_frequency_band_hz")
+    frequency = f"MFCC / log-mel band: {band[0]:g}–{band[1]:g} Hz\n" if band else ""
     return (f"{summary.get('item_count')} syllables · {summary.get('sample_rate_hz')} Hz · "
         f"{_seconds(summary.get('total_duration_s'))} s of audio\n"
+        f"{frequency}"
         f"Parent context: {summary.get('context_available_count')} · Segment only: {summary.get('segment_only_count')} · "
         f"Original segments.json: {'present' if sidecar is True else 'absent' if sidecar is False else 'not recorded'}\n"
         f"Original-recording declarations: {counts.get('declared')} known / {counts.get('unknown')} unknown. "
         "A parent clip or syllable file is not automatically an independent recording.")
 
 
+def import_audio_summary(rate, bandpass):
+    from .acoustics.config import analysis_frequency_band
+    low, high = analysis_frequency_band(rate)
+    filter_text = (f"{bandpass['low_hz']:g}–{bandpass['high_hz']:g} Hz (order {bandpass['order']})"
+                   if bandpass else "off")
+    return (f"Native audio: {rate} Hz · MFCC / log-mel band: {low:g}–{high:g} Hz · "
+            f"Band-pass: {filter_text}.")
+
+
 class BandpassControls(QWidget):
     """Shared import-time audio processing choices; display settings are separate."""
     changed = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, sample_rate=None):
         super().__init__(parent)
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
@@ -77,11 +90,17 @@ class BandpassControls(QWidget):
         self.enable_checkbox.setToolTip("Filter the imported PCM before feature extraction. Original input files remain unchanged.")
         self.low_hz = QDoubleSpinBox(); self.low_hz.setObjectName("bandpassLowHz")
         self.high_hz = QDoubleSpinBox(); self.high_hz.setObjectName("bandpassHighHz")
-        for widget, prefix, value in ((self.low_hz, "Low ", 500), (self.high_hz, "High ", 15000)):
+        for widget, prefix, value in ((self.low_hz, "Low ", 500), (self.high_hz, "High ", 0)):
             widget.setDecimals(1); widget.setRange(.1, 1_000_000)
             widget.setSingleStep(100); widget.setPrefix(prefix); widget.setSuffix(" Hz"); widget.setValue(value)
         self.order = QSpinBox(); self.order.setObjectName("bandpassOrder")
         self.order.setRange(1, 8); self.order.setValue(4); self.order.setPrefix("Order ")
+        self.automatic_high = True
+        self.high_hz.setMinimum(0)
+        self.high_hz.setSpecialValueText("High: automatic")
+        self.high_hz.setToolTip("The suggested high cutoff follows the recording's sample rate. Enter a cutoff to override it, or 0 to use the suggestion.")
+        self.set_sample_rate(sample_rate)
+        self.high_hz.valueChanged.connect(self._high_edited)
         row.addWidget(self.enable_checkbox)
         for widget in (self.low_hz, self.high_hz, self.order):
             row.addWidget(widget); widget.setEnabled(False)
@@ -93,11 +112,25 @@ class BandpassControls(QWidget):
         for widget in (self.low_hz, self.high_hz, self.order): widget.setEnabled(enabled)
         self.changed.emit()
 
+    def set_sample_rate(self, rate):
+        self._rate = rate
+        if self.automatic_high:
+            from .acoustics.bandpass import suggested_high_hz
+            with QSignalBlocker(self.high_hz):
+                self.high_hz.setValue(suggested_high_hz(rate) if rate is not None else 0)
+
+    def _high_edited(self, value):
+        self.automatic_high = value == 0
+        if self.automatic_high:
+            self.set_sample_rate(self._rate)
+
     def settings(self, rate=None):
+        if rate is not None:
+            self.set_sample_rate(rate)
         if not self.enable_checkbox.isChecked():
             return None
         value = {"low_hz": self.low_hz.value(), "high_hz": self.high_hz.value(), "order": self.order.value()}
-        if value["low_hz"] >= value["high_hz"]:
+        if not (self.automatic_high and rate is None) and value["low_hz"] >= value["high_hz"]:
             raise ValueError("The low cutoff must be below the high cutoff.")
         if rate is not None:
             from .acoustics.bandpass import validate_bandpass
@@ -128,15 +161,16 @@ class InputInspectionDialog(QDialog):
         self.details = _readonly()
         self.details.setPlainText(_json({key: view.get(key) for key in
             ("summary", "sources", "duplicate_pcm_groups", "input_requirements", "limits")}))
+        toggle = QPushButton("Input details…")
+        toggle.setCheckable(True)
+        toggle.toggled.connect(self.details.setVisible)
+        layout.addWidget(toggle, 0, Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(self.details, 1)
-        note = QLabel("Supported input: WAV, FLAC, MP3, Ogg Vorbis or AIFF (.aif/.aiff). "
-                      "Mono and stereo files can share a batch. Stereo channels are averaged for listening and analysis. "
-                      "Files must share a sample rate of at least 32000 Hz and contain segments no longer than 30 seconds. "
-                      "This inspection is read-only. Import freezes this reviewed input identity and runs the fixed recipe. "
-                      "No human labels are loaded. The first invalid input stops inspection.")
+        self.details.hide()
+        note = QLabel("Review the syllables and choose any band-pass filter before creating the project.")
         note.setWordWrap(True)
         layout.addWidget(note)
-        self.bandpass = BandpassControls(self)
+        self.bandpass = BandpassControls(self, sample_rate=view.get("summary", {}).get("sample_rate_hz"))
         layout.addWidget(self.bandpass)
         self.problem = QLabel(); self.problem.setWordWrap(True)
         self.problem.setTextFormat(Qt.TextFormat.PlainText)
@@ -423,7 +457,7 @@ class StageAWorkspaceDialog(QDialog):
                 f"Applied candidate groups: {candidates.get('organization_group_count')} · "
                 f"Initially unclustered: {candidates.get('initial_unclustered_count')} · "
                 f"Current pool (stable IDs deduplicated): {candidates.get('current_pool_count')}\n"
-                "Noise is not exclusion. The nonempty pool is reviewed after the first pass. "
+                f"Unclustered syllables remain review targets. {POOL_ORDER_HINT} "
                 "Source declarations are read-only here; unknown original recordings remain unknown." +
                 ("\nInitial unclustered intake is pending explicit organization application; every listed ID is retained."
                  if candidates.get("initial_unclustered_intake_pending") else ""))

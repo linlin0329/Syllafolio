@@ -408,7 +408,7 @@ class PoolAuditionPreview(FamilyAuditionPreview):
                 "review_blockers": pool_review_blockers(state),
                 "pool_entries": copy.deepcopy(binding["entries"]), "pool_sources": copy.deepcopy(binding["sources"]),
                 "pool_state_fingerprint": canonical_hash(binding), "input_fingerprint": binding["input_fingerprint"],
-                "read_only_reason": "Audition only while first-pass or family reviews remain unfinished; no pool decisions are saved here.",
+                "read_only_reason": "This listening preview is read-only. Open the current pool round to save eligible decisions.",
                 "result": {k: copy.deepcopy(result[k]) for k in ("parameters", "coverage", "pool_clustering") if k in result}}
 
     def matches(self, state):

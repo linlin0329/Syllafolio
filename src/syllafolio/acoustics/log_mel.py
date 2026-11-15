@@ -4,14 +4,14 @@ from __future__ import annotations
 import librosa
 import numpy as np
 
+from .config import analysis_frequency_band
 
 N_FFT = 1024
 
 HOP_LENGTH = 256
 
-FMIN = 1000.0
-
-FMAX = 15000.0
+# Full-band defaults retained for consumers of the published recipe.
+FMIN, FMAX = analysis_frequency_band(32000)
 
 N_MELS = 64
 
@@ -23,14 +23,15 @@ def log_mel_patch(waveform: np.ndarray, sample_rate: int) -> np.ndarray:
     """提取逐音节标准化的定长 log-mel patch。"""
     if len(waveform) < N_FFT:
         waveform = np.pad(waveform, (0, N_FFT - len(waveform)))
+    low, high = analysis_frequency_band(sample_rate)
     mel = librosa.feature.melspectrogram(
         y=waveform,
         sr=sample_rate,
         n_fft=N_FFT,
         hop_length=HOP_LENGTH,
         n_mels=N_MELS,
-        fmin=FMIN,
-        fmax=FMAX,
+        fmin=low,
+        fmax=high,
         power=2.0,
     )
     log_mel = librosa.power_to_db(mel, ref=np.max)

@@ -4,6 +4,8 @@ from unittest import TestCase
 from unittest.mock import patch
 
 import numpy as np
+import soundfile as sf
+from scipy.signal import butter, sosfiltfilt
 from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox
 
 import test_interval_import_ui as base_ui
@@ -50,6 +52,20 @@ class BandpassControlUi(TestCase):
             self.assertIsNone(controls.settings(48000))
         controls.close()
 
+    def test_suggested_high_follows_the_rate_but_preserves_an_explicit_cutoff(self):
+        controls = BandpassControls(sample_rate=16000)
+        controls.enable_checkbox.setChecked(True)
+        self.assertEqual(controls.settings(16000)["high_hz"], 7500)
+        self.assertEqual(controls.settings(22050)["high_hz"], 10335.9)
+        self.assertEqual(controls.settings(48000)["high_hz"], 15000)
+        controls.high_hz.setValue(12000)
+        with self.assertRaisesRegex(ValueError, "below 8000 Hz"):
+            controls.settings(16000)
+        self.assertEqual(controls.high_hz.value(), 12000)
+        controls.high_hz.setValue(0)
+        self.assertEqual(controls.settings(16000)["high_hz"], 7500)
+        controls.close()
+
 
 class BandpassImportUi(TestCase):
     # Reuse fixture methods without inheriting and repeating the original tests.
@@ -83,6 +99,69 @@ class BandpassImportUi(TestCase):
         self.assertEqual(imported.call_args.kwargs["expected_inspection_fingerprint"], fingerprint)
         self.assertEqual(view["inspection_fingerprint"], fingerprint)
         self.assertIsNone(self.window.project)
+
+    def test_segmented_low_rate_inspection_and_audition(self):
+        from io import BytesIO
+        from syllafolio.annotation_desktop_comparison_audition import prepare_audition
+
+        clips = self.root / "clips"
+        clips.mkdir()
+        rate = 16000
+        pcm = self.pcm[:rate]
+        sf.write(clips / "one.wav", pcm, rate, subtype="FLOAT")
+        sf.write(clips / "two.wav", pcm * .5, rate, subtype="FLOAT")
+        view = inspect_input(clips)
+        def use_suggestion(dialog):
+            dialog.bandpass.enable_checkbox.setChecked(True)
+            self.assertEqual(dialog.bandpass.high_hz.value(), 7500)
+            dialog.accept()
+            return dialog.result()
+
+        dest = self.root / "low"
+        with patch.object(InputInspectionDialog, "exec", use_suggestion), patch.object(desktop.ProjectContractDialog, "exec", self.accept_contract):
+            self.window._confirm_inspected_import(clips, dest, view)
+            base_ui.wait_for(lambda: not self.window._busy and (self.window.project or self.errors), 120)
+        self.assertFalse(self.errors)
+        project = self.window.project
+        ids = project.dataset.item_ids
+        audio, actual_rate, page, image = prepare_audition(project, ids, .125)
+        self.assertEqual(actual_rate, rate)
+        self.assertEqual(page["display"]["frequency_max_hz"], 8000)
+        self.window.canvas.set_page(audio, rate, page, BytesIO(image))
+        self.assertAlmostEqual(self.window.canvas.spec.viewRange()[1][1], 8)
+        self.assertIn("0–8 kHz", self.window.display_info.text())
+        self.assertEqual(len(audio), 2 * rate + 2000)
+        expected = sosfiltfilt(butter(4, (500, 7500), fs=rate, btype="bandpass", output="sos"), pcm)
+        np.testing.assert_allclose(audio[:rate], expected, rtol=0, atol=2e-7)
+
+    def test_16khz_recording_filter_preview_then_create_with_original_frame_times(self):
+        rate = 16000
+        time = np.arange(rate) / rate
+        left = (.22 * np.sin(2*np.pi*3200*time)).astype("float32")
+        right = (.16 * np.sin(2*np.pi*7700*time)).astype("float32")
+        sf.write(self.recording, np.column_stack((left, right)), rate, subtype="FLOAT")
+        dialog = self.dialog()
+        dialog.bandpass.enable_checkbox.setChecked(True)
+        self.loaded(dialog)
+        self.assertEqual(dialog.bandpass.high_hz.value(), 7500)
+        self.assertEqual(dialog.preview.bandpass["high_hz"], 7500)
+        self.assertIn("1000–7500 Hz", dialog.summary.text())
+        self.assertEqual(dialog.player.rate, rate)
+        self.assertEqual(dialog.spectrogram.viewRange()[1], [0, 8])
+        sos = butter(4, (500, 7500), fs=rate, btype="bandpass", output="sos")
+        expected = sosfiltfilt(sos, .5*left + .5*right)
+        expected = expected[:rate//4]
+        np.testing.assert_allclose(dialog._pcm, expected, atol=2e-7, rtol=0)
+        dest = self.root / "long-low"
+        with patch.object(desktop.QFileDialog, "getSaveFileName", return_value=(str(dest), "")), patch.object(desktop.ProjectContractDialog, "exec", self.accept_contract):
+            dialog.confirm_button.click()
+            base_ui.wait_for(lambda: not self.window._busy and (self.window.project or self.errors), 120)
+        self.assertFalse(self.errors)
+        project = self.window.project
+        item, = project.dataset.item_ids
+        saved, sr, _ = project.read_audio(item)
+        self.assertEqual(sr, rate)
+        np.testing.assert_allclose(saved, expected, rtol=0, atol=2e-7)
 
     def test_recording_setting_change_invalidates_then_previews_filtered_pcm(self):
         dialog = self.dialog(); self.loaded(dialog)

@@ -40,6 +40,77 @@ def _item_versions(project, state, targets):
     return dict(cached[1])
 
 
+POOL_ORDER_HINT = ("We recommend reviewing the pool after the candidate groups. "
+                   "You can listen and save unlocked pool members during the first pass.")
+
+
+def unconfirmed_pool_departures(batch, review):
+    """Previously saved outcomes that won't have a target on a replacement pool page."""
+    if review.get("closed") or not review.get("pool_refresh_required"):
+        return set()
+    remaining = set(batch.get("pool", {}).get("active_ids", []))
+    assignments = batch.get("assignments", {})
+    return {decision["disposition"] for item, decision in review.get("decisions", {}).items()
+            if item not in remaining and decision.get("record_id")
+            and assignments.get(item, {}).get("record_id") == decision["record_id"]}
+
+
+def pool_guidance(batch, review):
+    """Use the same next-step text in the tree, audition header and pool details."""
+    pool = batch.get("pool", {})
+    if not batch.get("organization"):
+        return "Apply a candidate grouping to open the global pool."
+    first_done = pool.get("first_pass_complete")
+    pending_family = pool.get("pending_family_review_ids")
+    if review.get("scope_stale") and not review.get("closed"):
+        return "Open Pool details to inspect this outdated round before preparing the current pool."
+    if review.get("status") == "cancel_requested":
+        return "Cancelling preparation. Wait for the task to finish before preparing the pool again."
+    if review.get("status") in ACTIVE:
+        return "Preparing pool audio. Open Tasks to check progress."
+    if review.get("audition_only"):
+        return "This preview is for listening only. Use Pool details to inspect the current review."
+    if review.get("pool_refresh_required") and pool.get("active_ids"):
+        action = "Prepare group" if review.get("closed") else "More → Prepare again…"
+        added = len(review.get("new_pool_item_ids", []))
+        change = (f"{added} new pool {'member is' if added == 1 else 'members are'} outside these pages."
+                  if added else "Pool membership or saved decisions have changed.")
+        departures = unconfirmed_pool_departures(batch, review)
+        if "discard" in departures:
+            return f"{change} Finish this round to confirm its exclusions, then prepare the updated pool."
+        if departures:
+            return (f"{change} Finish this round before preparing the new members, or use {action} "
+                    "and recheck earlier unconfirmed assignments in their families.")
+        return f"{change} Use {action} to prepare an updated round. Existing pages keep their original members."
+    if review.get("status") in {"failed", "cancelled", "interrupted"}:
+        return "Open Tasks to inspect the preparation result, then prepare the pool again."
+    if (review.get("status") == "ready" and review.get("pool_mode") == "current_pool"
+            and not any(review.get(key) for key in ("closed", "archived", "read_only"))):
+        if review.get("can_close_current_pool"):
+            return ("This round is ready to finish. All candidate groups must also be finished for final checks."
+                    if not first_done else "This round is ready to finish.")
+        message = "Listen and save unlocked members of this round."
+        if review.get("item_locks"):
+            message += " Select a locked syllable to see why it cannot be saved here."
+        if not first_done:
+            message += " Final confirmation requires finishing the candidate groups."
+        return message
+    if pool.get("stage_complete") or (review.get("closed") and review.get("pool_mode") == "current_pool"):
+        if not first_done:
+            return "This pool round is finished. Finish the remaining candidate groups before final confirmation."
+        if pending_family:
+            return "Finish the open family reviews before final confirmation."
+        if pool.get("stage_complete"):
+            return "Pool coverage is complete. Continue in Final checks."
+    if not pool.get("active_ids"):
+        return ("Use Skip empty pool to record the empty pool." if first_done and not pending_family
+                else "The pool is empty. Finish outstanding candidate and family reviews before recording the skip.")
+    if not pool.get("can_prepare_current_pool"):
+        return "Open Pool details to check when a new round can be prepared."
+    return ("Use Prepare group to listen to the current pool. Unlocked members can be saved during the first pass."
+            if not first_done else "Use Prepare group to review the current pool.")
+
+
 def project_view(project, snapshot=None, *, new_route="cluster"):
     """Use the one owner's supplied projection; stable-ID sources are not labels."""
     state = project.snapshot() if snapshot is None else snapshot
@@ -108,6 +179,7 @@ def project_view(project, snapshot=None, *, new_route="cluster"):
     source_counts = {kind: sum(kind in row["source_kinds"] for row in rows)
                      for kind in ("algorithmic_unclustered", "human_unresolved")}
     source_counts["both"] = sum({"algorithmic_unclustered", "human_unresolved"} <= set(row["source_kinds"]) for row in rows)
+    open_exclusions = "discard" in unconfirmed_pool_departures(batch, previous)
     scope = {"current_pool_ids": current_ids, "current_pool_count": len(current_ids), "rows": rows,
         "target_ids": targets, "preparation_item_ids": targets,
         "fit_ids": targets if route == "cluster" or (route == "pool_cluster" and len(targets) > 1) else [],
@@ -121,7 +193,8 @@ def project_view(project, snapshot=None, *, new_route="cluster"):
         "review": previous or None, "review_id": previous.get("review_id"),
         "can_continue": continuing, "waiting": continuing and previous.get("status") in ACTIVE,
         "can_prepare": not blockers and not continuing and not can_go_final and not completed_freeze,
-        "can_refreeze": bool(current_pool_round and previous.get("pool_refresh_required") and
+        "unconfirmed_departed_exclusions": open_exclusions,
+        "can_refreeze": bool(not open_exclusions and current_pool_round and previous.get("pool_refresh_required") and
                              previous.get("status") == "ready" and settled and current_ids and may_prepare),
         "can_skip_empty": not current_ids and not blockers and not continuing and not can_go_final,
         "can_go_final": can_go_final, "stage_complete": stage_complete,
@@ -253,6 +326,9 @@ class PoolReviewController:
                     return self._result(None, view, continued=True)
                 _require(self._binding(view, generation) == binding, "POOL_SCOPE_CHANGED", "The reviewed pool or version changed; refresh and inspect the complete scope.")
                 _require(not scope["needs_archive"], "POOL_SCOPE_STALE", "Explicitly archive this stopped stale round before freezing a new complete pool.")
+                if refreeze and scope["unconfirmed_departed_exclusions"]:
+                    raise PoolReviewError("POOL_UNCONFIRMED_EXCLUSIONS",
+                                          "Finish this pool round to confirm its exclusions before preparing another round.")
                 _require(scope["can_refreeze"] if refreeze else scope["can_prepare"], "BATCH_BUSY",
                          "Check the current pool and wait for its active calculation before preparing it.")
                 _require(not (refreeze or scope["requires_reopen_reason"]) or bool(intent["reopen_reason"]),
@@ -434,21 +510,17 @@ class PoolReviewDialog(QDialog):
         selected = self.controller.snapshot()
         if self._waiting and not self.owner._busy: self._waiting = False
         available = not self.owner._busy and not self._waiting
-        self.first_pass_label.setText(f"First pass: {first['completed']} / {first['total']} current groups complete. " +
-            ("No candidate groups: unclustered input proceeds to the global pool after the candidate organisation is applied." if first["zero_candidate_groups"] else "") +
-            (" Candidate reviews remain open. Independent pool items can still be assigned." if not first["complete"]
-             and scope["current_pool_ids"] else " First pass is incomplete; locate the missing group below."
-             if not first["complete"] else " First-pass gate is satisfied.") +
-            (" Pending human-family rounds: " + ", ".join(first["pending_family_review_ids"]) if first["pending_family_review_ids"] else ""))
+        self.first_pass_label.setText(
+            f"Candidate groups finished: {first['completed']} of {first['total']}."
+            + (f" Open family reviews: {len(first['pending_family_review_ids'])}." if first["pending_family_review_ids"] else ""))
         old_group = self.missing_groups.currentRow()
         _rows(self.missing_groups, [[row["group_id"], row["item_count"], row["status"], row["missing_decision_count"], ", ".join(row["affected_item_ids"])] for row in first["missing_groups"]])
         if first["missing_groups"]: self.missing_groups.selectRow(min(max(old_group, 0), len(first["missing_groups"]) - 1))
         _rows(self.pool_items, [[row["item_id"], row["state"], ", ".join(row["source_kinds"]), row["pending_required_checks"], row["latest_review_id"]] for row in scope["rows"]])
-        self.pool_summary.setText(f"Current pool: {scope['current_pool_count']} unique stable IDs · Source counts {scope['source_counts']} · "
-            f"Frozen round: {len(scope['frozen_target_ids'])} targets / {scope['saved_outcome_count']} saved outcomes. " +
-            (f"Review complete with {scope['residual_reviewed_unresolved_count']} reviewed unresolved residual members; clearing them is not required." if scope["can_go_final"] else
-             "Saving outcomes is distinct from explicitly finishing all frozen pages and necessary checks.") +
-            (" New IDs outside the existing frozen round remain pending: " + ", ".join(scope["new_outside_frozen_ids"]) if scope["new_outside_frozen_ids"] else ""))
+        self.pool_summary.setText(
+            f"Current pool: {scope['current_pool_count']} syllables · This round: "
+            f"{len(scope['frozen_target_ids'])} targets · {scope['saved_outcome_count']} saved.\n"
+            + pool_guidance(state["batch_review"], scope.get("review") or {}))
         text = json.dumps(system_fields({"first_pass": first, "scope": scope}), ensure_ascii=False, indent=2, allow_nan=False)
         if self.details.toPlainText() != text: self.details.setPlainText(text)
         allowed = scope["direct_exception"].get("allowed") is True

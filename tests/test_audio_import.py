@@ -179,7 +179,7 @@ class AudioImport(unittest.TestCase):
         for name, fmt, subtype, samples, rate, code in [
             ("wrong.mp3", "FLAC", "PCM_16", self.tone, self.rate, "SOURCE_FORMAT"),
             ("three-channel.flac", "FLAC", "PCM_16", np.column_stack([self.tone] * 3), self.rate, "AUDIO_CHANNELS"),
-            ("low.aiff", "AIFF", "PCM_16", self.tone, 22050, "AUDIO_SAMPLE_RATE"),
+            ("low.aiff", "AIFF", "PCM_16", self.tone, 12000, "AUDIO_SAMPLE_RATE"),
             ("other.ogg", "OGG", "OPUS", self.tone, self.rate, "SOURCE_FORMAT"),
         ]:
             with self.subTest(name=name):

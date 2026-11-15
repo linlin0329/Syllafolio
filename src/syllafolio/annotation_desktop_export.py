@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog,
     QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
 from .annotation_assistant_contracts import canonical_hash
+from .annotation_catalogue_report import FORM_LABELS
 from .annotation_desktop_review_media import _checked_path
 
 CHOOSE = "__export_choose__"
@@ -343,8 +344,10 @@ class ExportDialog(QDialog):
         layout.addLayout(top)
         self.scope_text = _label()
         self.counts_text = _label()
+        self.form_counts_text = _label()
+        self.form_counts_text.setObjectName("catalogueFineFormCounts")
         self.inventory_text = _label()
-        for label in (self.scope_text, self.counts_text, self.inventory_text):
+        for label in (self.scope_text, self.counts_text, self.form_counts_text, self.inventory_text):
             layout.addWidget(label)
         self.members_button = QPushButton("Show included syllables…")
         self.members_button.setCheckable(True)
@@ -459,6 +462,13 @@ class ExportDialog(QDialog):
             f"No declared scope. A draft covers all {total} task syllables.")
         self.counts_text.setText("   ·   ".join(f"{title}: {counts.get(field, 0)}" for field, title in
             (("assigned", "Assigned"), ("unresolved", "Family unresolved"), ("excluded", "Excluded"), ("unreviewed", "Unreviewed"))))
+        forms = self._view.get("fine_form_summary")
+        self.form_counts_text.setVisible(bool(forms))
+        if forms:
+            totals = forms["counts"]
+            values = " · ".join(f"{label}: {totals[status]}" for status, label in FORM_LABELS.items()
+                                if totals[status] or status in {"main", "variant", "candidate_form", "unresolved", "not_assessed"})
+            self.form_counts_text.setText(f"Fine forms among {forms['assigned_family_count']} family-assigned syllables: {values}")
         self.inventory_text.setText(_inventory_summary(inventory) if inventory else "Package contents unavailable.")
         if self.members_button.isChecked() and inventory:
             self.inventory_detail.setPlainText(_inventory_details(inventory))

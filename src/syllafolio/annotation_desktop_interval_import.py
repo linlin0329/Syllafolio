@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from .annotation_desktop_widgets import PcmPlayer
-from .annotation_desktop_stage_a_ui import BandpassControls
+from .annotation_desktop_stage_a_ui import BandpassControls, import_audio_summary
 from .annotation_english import system_error
 
 
@@ -190,6 +190,7 @@ class IntervalImportDialog(QDialog):
         self.player.playingChanged.connect(lambda _active: self._update_enabled())
         self.recording_browse.clicked.connect(self._choose_recording)
         self.annotation_browse.clicked.connect(self._choose_annotations)
+        self.recording_input.textChanged.connect(lambda: self.bandpass.set_sample_rate(None))
         for edit in (self.recording_input, self.annotation_input): edit.textChanged.connect(self._input_changed)
         self.kind.currentIndexChanged.connect(self._input_changed)
         self.bandpass.changed.connect(self._bandpass_changed)
@@ -296,6 +297,7 @@ class IntervalImportDialog(QDialog):
             # The file may have been replaced since a prior preview. Validate
             # Nyquist against the newly opened recording in the worker.
             bandpass = self.bandpass.settings()
+            automatic_high = self.bandpass.automatic_high
         except (ValueError, RuntimeError) as error:
             self._message(system_error(error), True)
             return
@@ -305,11 +307,13 @@ class IntervalImportDialog(QDialog):
         self._message("Reading recording and annotations…")
         def inspected(preview):
             self._preview = preview
+            self.bandpass.set_sample_rate(preview.rate)
             self.tier.blockSignals(True); self.tier.clear()
             for index, tier in enumerate(preview.tiers): self.tier.addItem(tier.name, index)
             self.tier.setCurrentIndex(0); self.tier.blockSignals(False)
             self._tier_changed()
-        self._run("Preview recording and annotations", lambda _progress, cancelled: open_preview(recording, annotation, kind, cancelled=cancelled, bandpass=bandpass), inspected)
+        self._run("Preview recording and annotations", lambda _progress, cancelled: open_preview(
+            recording, annotation, kind, cancelled=cancelled, bandpass=bandpass, automatic_high=automatic_high), inspected)
 
     def _tier_changed(self, *_args):
         self._row_epoch += 1
@@ -322,7 +326,8 @@ class IntervalImportDialog(QDialog):
             index = self.tier.currentData()
             self._regions = self._preview.regions(index, self.include_empty.isChecked())
             info = getattr(self._preview.tiers[index], "info", {}) or {}
-            text = f"{len(self._regions)} importable interval(s)."
+            text = (f"{len(self._regions)} importable interval(s). "
+                    + import_audio_summary(self._preview.rate, self._preview.bandpass))
             if self._preview.recording_channels == 2:
                 text += " Left and right channels are averaged for playback and analysis."
             if self._preview.kind == "textgrid" and not self.include_empty.isChecked():
@@ -391,13 +396,15 @@ class IntervalImportDialog(QDialog):
             self.waveform.setXRange(region.start_frame/preview.rate, region.stop_frame/preview.rate, padding=0)
             self.waveform.enableAutoRange(axis="y")
             data, settings = result[3:]
+            display_khz = min(settings["frequency_max_hz"], preview.rate/2)/1000
+            self.spectrogram.setLimits(yMin=0, yMax=display_khz)
+            self.spectrogram.setYRange(0, display_khz, padding=0)
             if data["db"].shape[1]:
                 hop = settings["hop_samples"] / preview.rate
                 df = preview.rate / (2 * settings["window_samples"])
                 left = region.start_frame/preview.rate + data["centers_s"][0] - hop/2
                 self.spectrum_image.setImage(data["db"], autoLevels=False, levels=(-settings["dynamic_range_db"], 0))
                 self.spectrum_image.setRect(QRectF(left, -df/2000, data["db"].shape[1]*hop, len(data["frequencies_hz"])*df/1000))
-                self.spectrogram.setYRange(0, min(settings["frequency_max_hz"], preview.rate/2)/1000, padding=0)
                 self.spectrum_note.setText(f"Spectrogram · {settings['dynamic_range_db']} dB relative to interval peak")
                 self.spectrum_note.setToolTip(f"Hann {settings['window_samples']}; FFT {2*settings['window_samples']}; hop {settings['hop_samples']}; display only.")
             else:

@@ -3,11 +3,20 @@ from dataclasses import dataclass, field
 from typing import List
 
 
+FULL_BAND_MIN_RATE = 32000
+
+
+def analysis_frequency_band(sample_rate):
+    """MFCC/log-mel passband in Hz; maintain a guard below the native Nyquist limit."""
+    return 1000, min(15000, sample_rate * 15 / 32)
+
+
 def spectral_contrast_parameters(sample_rate, n_fft):
     """Six octave boundaries and an open-ended seventh band up to Nyquist."""
     # 250 Hz puts the last boundary at 8 kHz, below Nyquist even at 32 kHz.
     # At very high rates keep at least two usable FFT bins in the lowest band.
-    return {"fmin": max(250.0, 2.0 * sample_rate / n_fft), "n_bands": 6,
+    first_boundary = 250.0 * min(1.0, sample_rate / FULL_BAND_MIN_RATE)
+    return {"fmin": max(first_boundary, 2.0 * sample_rate / n_fft), "n_bands": 6,
             "quantile": 0.02, "linear": False}
 
 

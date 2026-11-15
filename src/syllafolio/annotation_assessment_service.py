@@ -120,6 +120,8 @@ class LabelAssessmentService:
         if not confirmed or not scope or confirmed.get("scope", {}).get("scope_id") != scope["scope_id"]:
             blocking.append({"code": "HUMAN_COMPLETION_REQUIRED", "message": "Review the scope and submit human completion confirmation before running quantitative assessment."})
         binding = {"input_fingerprint": self.owner.dataset.input_fingerprint,
+            "acoustic_analysis": copy.deepcopy(self.owner.acoustic_analysis),
+            "audio_preprocessing": copy.deepcopy(self.owner.audio_preprocessing),
             "input_versions": copy.deepcopy(self.owner.dataset.input_versions),
             "input_artifacts": copy.deepcopy(self.owner.dataset._provenance),
             "numeric_row_identity": self.numeric_identity,
@@ -142,7 +144,7 @@ class LabelAssessmentService:
     def _stale(prior, current):
         fields = ("input_fingerprint", "input_versions", "input_artifacts", "numeric_row_identity", "numeric_input_blocking", "catalogue_revision", "scope", "items", "memberships",
                   "definitions", "completion_id", "completion", "quality_gates", "source_version", "source_mapping",
-                  "source_identity_fingerprint", "preset", "code_identity")
+                  "source_identity_fingerprint", "preset", "code_identity", "acoustic_analysis", "audio_preprocessing")
         return [field for field in fields if prior.get(field) != current.get(field)]
 
     def snapshot(self, state, completion=None, projected=None):

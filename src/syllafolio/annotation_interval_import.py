@@ -15,7 +15,7 @@ import soundfile as sf
 from scipy.io import wavfile
 
 from . import annotation_stage_a as stage
-from .acoustics.bandpass import filter_audio_file, validate_bandpass
+from .acoustics.bandpass import filter_audio_file, suggested_high_hz, validate_bandpass
 from .annotation_interval_formats import detect_format, parse_annotations
 
 
@@ -137,7 +137,7 @@ def _read_region(stream, region):
     return samples
 
 
-def open_preview(recording, annotation, kind="auto", *, cancelled=None, bandpass=None):
+def open_preview(recording, annotation, kind="auto", *, cancelled=None, bandpass=None, automatic_high=False):
     recording, annotation = Path(recording).resolve(strict=True), Path(annotation).resolve(strict=True)
     if recording.suffix.lower() not in stage.INPUT_FORMATS or not recording.is_file():
         raise ValueError(f"Choose a recording in one of these formats: {stage.FORMAT_NAMES}.")
@@ -147,9 +147,15 @@ def open_preview(recording, annotation, kind="auto", *, cancelled=None, bandpass
     if initial.st_size > stage.LIMITS["max_total_audio_bytes"]:
         raise ValueError("The recording exceeds the 2 GiB project input limit.")
     stage._cancel(cancelled)
+    def filter_for_rate(rate):
+        settings = bandpass
+        if automatic_high and settings is not None:
+            settings = dict(settings, high_hz=suggested_high_hz(rate))
+        return validate_bandpass(settings, rate)
+
     if bandpass is not None:
         # Reject out-of-band settings before copying or decoding a long recording.
-        bandpass = validate_bandpass(bandpass, stage._audio_header(recording).samplerate)
+        filter_for_rate(stage._audio_header(recording).samplerate)
     data = annotation.read_bytes()
     if kind == "auto":
         kind = detect_format(data, annotation.name)
@@ -170,7 +176,7 @@ def open_preview(recording, annotation, kind="auto", *, cancelled=None, bandpass
             raise ValueError("The annotation file contains no interval tiers.")
         pcm, info = stage._audio_view(snapshot, digest, scratch, segment=False, cancelled=cancelled,
                                       source_info=source_info)
-        settings = validate_bandpass(bandpass, info.samplerate)
+        settings = filter_for_rate(info.samplerate)
         audition = pcm
         if settings:
             audition = scratch / "bandpass-preview.wav"

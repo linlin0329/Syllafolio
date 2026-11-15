@@ -1,6 +1,10 @@
 'Versioned catalogue delivery; freeze human records without classification or new acoustic assessment.'
 from __future__ import annotations
 
+from .annotation_analysis_metadata import report_analysis
+from .annotation_catalogue_report import fine_form_summary
+from .annotation_form_status import projected_fine_form
+
 from concurrent.futures import ThreadPoolExecutor
 import copy
 import hashlib
@@ -130,7 +134,8 @@ class CatalogueExportService:
                             "logmel_sha256": owner.dataset_dir / "logmel.npy",
                             "preset_sha256": Path(preset_path or DEFAULT_PRESET)}
         self.code_identity = {name: _sha(Path(__file__).with_name(name)) for name in
-            ("annotation_catalogue_export.py", "annotation_catalogue_report.py", "annotation_spectrogram.py", "annotation_decision_history.py")}
+            ("annotation_catalogue_export.py", "annotation_catalogue_report.py", "annotation_form_status.py",
+             "annotation_spectrogram.py", "annotation_decision_history.py")}
 
     def close(self):
         for event in self.cancel.values():
@@ -273,22 +278,8 @@ class CatalogueExportService:
             ident = media["item_id"]
             current = projected[ident]
             saved = assignment.get(ident, {})
-            refinement = saved.get("legacy_refinement", {})
-            candidates = [row for row in decisions if row["decision_id"] in effective_decisions and ident in row.get("affected_ids", [])
-                          and (row.get("issue_id") in current.get("current_issue_ids", []) or row["decision_id"] == refinement.get("decision_id"))]
-            decision = max(candidates, key=lambda row: (row.get("catalogue_revision_after", -1), row["decision_id"]), default={})
-            decision_axes = next((row["axes"] for row in decision.get("item_axes", []) if row["item_id"] == ident), decision.get("axes"))
-            # 只报告已有三轴；批量分配未判定末级时保持not_assessed，不凭名称推断主体/变体。
-            decision_current = bool(decision and decision.get("issue_id") in current.get("current_issue_ids", []))
-            if refinement.get("decision_id") == decision.get("decision_id"):
-                decision_current = True
-            if decision_axes:
-                assigned = decision_axes.get("family_status") == "assigned"
-                same_family = decision_axes.get("family_id") == family_map.get(ident) and (assigned == (ident in family_map))
-                same_leaf = decision_axes.get("leaf_id") == leaf_map.get(ident)
-                # 后续批量改归属不一定删除旧fine issue；旧三轴只保留在审计里，不能贴到新family/leaf上。
-                decision_current = decision_current and same_family and same_leaf
-            axes = copy.deepcopy(decision_axes) if decision_current and decision_axes else None
+            fine = projected_fine_form(ident, current.get("current_issue_ids", ()), saved,
+                                       family_map.get(ident), leaf_map.get(ident), decisions, effective_decisions)
             disposition = current.get("batch_disposition")
             if current["processing_state"] == "unfinished" or current.get("closure_confirmation_required"):
                 category = "unreviewed"
@@ -306,15 +297,13 @@ class CatalogueExportService:
             if saved.get("reason_code"):
                 from .annotation_batch_review import COMPACT_REASON_CODES
                 reason_metadata["reason_code_label"] = COMPACT_REASON_CODES.get(saved.get("disposition"), {}).get(saved["reason_code"])
-            axes_reason = (decision.get("reason") or decision.get("rationale") or "") if decision_current else ""
-            reason = axes_reason or disposition_reason
+            reason = fine["axes_reason"] or disposition_reason
             items.append({**copy.deepcopy(media), "in_scope": ident in selected, "family_id": family_map.get(ident),
                 "leaf_id": leaf_map.get(ident), "processing_state": current["processing_state"],
-                "disposition": disposition, "category": category, "axes": axes,
-                "form_status": (axes or {}).get("form_status", saved.get("form_status", "not_assessed")),
-                "reason": reason, "disposition_reason": disposition_reason, "axes_reason": axes_reason,
+                "disposition": disposition, "category": category, **fine,
+                "reason": reason, "disposition_reason": disposition_reason,
                 **reason_metadata,
-                "source_record_id": saved.get("record_id"), "decision_id": decision.get("decision_id") if decision_current else None,
+                "source_record_id": saved.get("record_id"),
                 "review_projection": copy.deepcopy(current), "saved_disposition": copy.deepcopy(saved),
                 "raw_recording_id": sources_by_id[ident]["raw_recording_id"],
                 "source_status": sources_by_id[ident]["status"], "source_evidence": sources_by_id[ident]["evidence"]})
@@ -347,7 +336,8 @@ class CatalogueExportService:
         titles = {key: title for key, title in titles.items() if title != key}
         if titles:
             context["family_titles"] = titles
-        return context, {"scope": scope, "counts": counts, "inventory": inventory, "items": items, "source_registry": sources,
+        return context, {"scope": scope, "counts": counts, "fine_form_summary": fine_form_summary(items),
+                         "inventory": inventory, "items": items, "source_registry": sources,
                          "completion": {"report": report, "record": completion}, "assessment_options": options,
                          "human_completion_current": not human_blocking, "completion_id": completion_id,
                          "human_blocking": human_blocking}
@@ -378,7 +368,7 @@ class CatalogueExportService:
                 "current_fingerprint": fingerprint, "jobs": jobs,
                 "latest_job_id": jobs[-1]["job_id"] if jobs else None,
                 "current_job_id": active[0]["job_id"] if active else None,
-                **{key: copy.deepcopy(preview[key]) for key in ("scope", "counts", "inventory", "assessment_options", "human_completion_current", "completion_id")}}
+                **{key: copy.deepcopy(preview[key]) for key in ("scope", "counts", "fine_form_summary", "inventory", "assessment_options", "human_completion_current", "completion_id")}}
 
     def _document(self, state, preview, context, mode, job_id, reason, assessment_id):
         from .annotation_final_review import final_review_projection
@@ -407,12 +397,17 @@ class CatalogueExportService:
                 require(full_report["snapshot_fingerprint"] == job["snapshot_fingerprint"] and full_report["result"] == job["report"],
                         "ASSESSMENT_CHANGED", 'The internal assessment report differs from its frozen record')
                 assessment["report_path"] = "assessment.json"
+                assessment["acoustic_analysis"] = report_analysis(full_report["frozen_snapshot"])
+                if "audio_preprocessing" in full_report["frozen_snapshot"]:
+                    assessment["audio_preprocessing"] = full_report["frozen_snapshot"]["audio_preprocessing"]
                 assessment["family_display_names"] = assessment_family_names(state, full_report)
                 assessment["report_sha256"] = job["report_sha256"]
         document = {"schema_version": "annotation-catalogue-export-v1", "export_id": job_id, "created_at": utc(),
             "project_identity": self.owner.record_metadata(),
             "mode": mode, "requested_mode": mode, "reason": reason, "snapshot_fingerprint": canonical_hash(context),
-            "scope": preview["scope"], "counts": preview["counts"], "inventory": preview["inventory"], "catalogue": catalogue,
+            "acoustic_analysis": copy.deepcopy(context["assessment_binding"]["acoustic_analysis"]),
+            "scope": preview["scope"], "counts": preview["counts"], "fine_form_summary": preview["fine_form_summary"],
+            "inventory": preview["inventory"], "catalogue": catalogue,
             "items": preview["items"], "source_registry": preview["source_registry"],
             "completion": preview["completion"], "assessment": assessment, "media": [],
             "versions": {"input_fingerprint": self.owner.dataset.input_fingerprint,
@@ -420,13 +415,16 @@ class CatalogueExportService:
                 "catalogue_revision": state["catalogue_revision"], "source_version": preview["source_registry"]["version"],
                 "protocol_version": context["protocol_version"], "export_code_identity": self.code_identity},
             **({"audio_preprocessing": copy.deepcopy(self.owner.audio_preprocessing)} if self.owner.audio_preprocessing else {}),
-            "spectrogram_display": context["display"], "audit_path": "audit.json",
+            "spectrogram_display": {**context["display"], "frequency_max_hz_actual": min(
+                context["display"]["settings"]["frequency_max_hz"], self.owner.dataset.sample_rate_hz / 2)},
+            "audit_path": "audit.json",
             "audit_scope": "task-wide audit; primary catalogue counts and completion concern declared scope only",
             "scientific_validity_certified": False, "labels_changed": False,
             "limitations": ['Complete delivery means the declared scope and listed versions have the required engineering records; it does not certify type truth or annotation accuracy.',
                             'Internal assessment does not demonstrate individual independence, external generalization or annotation workflow efficacy.',
                             'Only examples explicitly selected in human definition cards are included; parent recordings and all syllables are not included, so this is not a complete dataset backup.']}
         audit = {"schema_version": "annotation-catalogue-audit-v1", "scope": "task-wide saved records",
+                 "acoustic_analysis": copy.deepcopy(document["acoustic_analysis"]),
                  "state": {k: copy.deepcopy(v) for k, v in state.items() if k not in {"catalogue_exports", "label_assessment"}},
                  "events": _audit_events(self.owner.store.events(self.owner.run_id)),
                  "assessment_history": copy.deepcopy(state.get("label_assessment", {}).get("history", [])),

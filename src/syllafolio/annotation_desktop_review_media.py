@@ -388,7 +388,7 @@ class DisplayControlsWidget(QWidget):
         waveform.addWidget(self.waveform_range)
         waveform.addStretch()
         outer.addLayout(waveform)
-        self.setToolTip("Display only. FFT is twice the Hann window (default 1024); frequency limit stays fixed at 16 kHz. "
+        self.setToolTip("Display only. FFT is twice the Hann window (default 1024). Spectrograms extend to half the recording's sample rate, up to 16 kHz. "
                        "Whole-page normalization applies to frozen batch pages. Single/context/reference panels keep independent clip peaks.")
         self.sync()
 

@@ -13,6 +13,7 @@ import tempfile
 import zipfile
 
 from . import __version__
+from .annotation_analysis_metadata import report_analysis
 from .annotation_catalogue_report import (
     CSS, _assessment_html, _csv_value, assessment_family_names, assessment_tables,
     localize_system_document,
@@ -46,7 +47,7 @@ def _html_report(report, assessment, table_paths):
 <p>{e(scope.get('purpose') or 'Family-level acoustic assessment')}</p>
 <p class="meta">Project {e(report['project_identity']['project_id'])} · Scope {e(scope.get('scope_id', 'unknown'))}
  · Catalogue revision {e(frozen['catalogue_revision'])} · Source version {e(frozen['source_version'])}<br>
-Report created {e(report['created_at'])} · Feature recipe {e(frozen['input_versions']['feature_version'])}</p>
+Report created {e(report['created_at'])}</p>
 </header>{_assessment_html({"assessment": assessment}, {}, standalone=True)}
 <section><h2>Analysis files</h2><p>{links}</p>
 <p>One prediction is a held-out prediction for one syllable in one repeat. Stable family IDs link the tables. Display names use the matching definition cards.</p>
@@ -90,8 +91,11 @@ def export_assessment(controller, job_id, destination, *, overwrite=False):
         "stale_for_current": bool(job.get("stale_for_current")), "stale_reasons": job.get("stale_reasons", []),
         "snapshot_fingerprint": document["snapshot_fingerprint"], "report_sha256": digest,
         "family_display_names": names, "report_path": "assessment.json",
+        "acoustic_analysis": report_analysis(document["frozen_snapshot"]),
         "report": readable,
     }
+    if "audio_preprocessing" in document["frozen_snapshot"]:
+        assessment["audio_preprocessing"] = document["frozen_snapshot"]["audio_preprocessing"]
     # Match the D4 presentation of legacy system messages; the original JSON stays byte-exact.
     assessment = localize_system_document({"assessment": assessment})["assessment"]
     manifest = {
@@ -99,7 +103,8 @@ def export_assessment(controller, job_id, destination, *, overwrite=False):
         "exporter_version": __version__, "project_identity": document["project_identity"],
         **{key: assessment[key] for key in ("job_id", "status", "stale_for_current", "stale_reasons",
                                              "snapshot_fingerprint", "report_sha256")},
-        "family_display_names": names, "manifest_self_excluded": True, "files": [],
+        "family_display_names": names, "acoustic_analysis": assessment["acoustic_analysis"],
+        "manifest_self_excluded": True, "files": [],
     }
 
     with tempfile.TemporaryDirectory(prefix=".assessment-", dir=path.parent) as temp:
