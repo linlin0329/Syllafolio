@@ -34,6 +34,7 @@ class _FamilyNameDelegate(QStyledItemDelegate):
 class ReviewTree(QTreeWidget):
     createFamilyRequested = Signal()
     renameFamilyRequested = Signal(str, str, str)
+    familyDefinitionRequested = Signal(str)
 
     def __init__(self):
         super().__init__()
@@ -41,6 +42,20 @@ class ReviewTree(QTreeWidget):
         self.candidate_menu = QMenu(self)
         self.candidate_menu.setObjectName("candidateGroupsMenu")
         self.model().modelAboutToBeReset.connect(self.candidate_menu.hide)
+        self.family_menu = QMenu(self)
+        self.family_menu.setObjectName("familyTreeMenu")
+        self._family_anchor = QPersistentModelIndex()
+        self.definition_action = self.family_menu.addAction("Type definition…")
+        self.definition_action.setObjectName("openFamilyDefinition")
+        self.definition_action.triggered.connect(self._request_definition)
+        self.family_separator = self.family_menu.addSeparator()
+        self.create_family_action = self.family_menu.addAction("New human family…")
+        self.create_family_action.setObjectName("newHumanFamily")
+        self.create_family_action.triggered.connect(self._request_create)
+        self.rename_family_action = self.family_menu.addAction("Rename")
+        self.rename_family_action.setObjectName("renameHumanFamily")
+        self.rename_family_action.triggered.connect(self._request_rename)
+        self.model().modelAboutToBeReset.connect(self._reset_family_menu)
         self.setEditTriggers(QAbstractItemView.EditTrigger.SelectedClicked)
         delegate = _FamilyNameDelegate(self)
         self.setItemDelegate(delegate)
@@ -93,24 +108,31 @@ class ReviewTree(QTreeWidget):
         if kind == "candidates_root":
             self.candidate_menu.popup(global_pos)
             return True
-        anchor = QPersistentModelIndex(name)
-        menu = QMenu(self)
-        menu.setObjectName("familyTreeMenu")
-        menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        create = menu.addAction("New human family…")
-        create.setObjectName("newHumanFamily")
-        create.setEnabled(self.family_actions_enabled)
-        def request_create():
-            if anchor.isValid() and self.family_actions_enabled:
-                self.createFamilyRequested.emit()
-        create.triggered.connect(request_create)
-        if data["kind"] == "family" and index.column() == 0:
-            rename = menu.addAction("Rename")
-            rename.setObjectName("renameHumanFamily")
-            rename.setEnabled(self.family_actions_enabled)
-            rename.triggered.connect(lambda: self._edit_family_name(QModelIndex(anchor)))
-        menu.popup(global_pos)
+        self._family_anchor = QPersistentModelIndex(name)
+        is_family = kind == "family"
+        self.definition_action.setVisible(is_family)
+        self.family_separator.setVisible(is_family)
+        self.create_family_action.setEnabled(self.family_actions_enabled)
+        self.rename_family_action.setVisible(is_family and index.column() == 0)
+        self.rename_family_action.setEnabled(self.family_actions_enabled)
+        self.family_menu.popup(global_pos)
         return True
+
+    def _reset_family_menu(self):
+        self.family_menu.hide()
+        self._family_anchor = QPersistentModelIndex()
+
+    def _request_definition(self):
+        data = self._family_anchor.data(Qt.ItemDataRole.UserRole) or {}
+        if self.isEnabled() and data.get("kind") == "family":
+            self.familyDefinitionRequested.emit(data["id"])
+
+    def _request_create(self):
+        if self._family_anchor.isValid() and self.isEnabled() and self.family_actions_enabled:
+            self.createFamilyRequested.emit()
+
+    def _request_rename(self):
+        self._edit_family_name(QModelIndex(self._family_anchor))
 
     def _edit_family_name(self, index):
         data = index.data(Qt.ItemDataRole.UserRole) or {}

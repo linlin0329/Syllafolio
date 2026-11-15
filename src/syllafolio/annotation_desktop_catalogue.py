@@ -80,16 +80,26 @@ class CatalogueDraftStore:
             drafts, original = self._load()
             drafts[key] = {"binding": copy.deepcopy(binding), "payload": copy.deepcopy(payload),
                            "submission_state": "unsubmitted", "review_confirmation": False}
-            value = {"schema_version": SCHEMA, **self.identity, "drafts": drafts}
-            temporary = self.path.with_name(".catalogue-draft-" + uuid.uuid4().hex + ".json")
-            try:
-                temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-                _checked_path(self.project, self.path)
-                current = hashlib.sha256(self.path.read_bytes()).hexdigest() if self.path.exists() else None
-                _require(current == original, "CATALOGUE_DRAFT_CHANGED", "Draft bytes changed; no original was overwritten.")
-                temporary.replace(self.path)
-            finally:
-                temporary.unlink(missing_ok=True)
+            self._write(drafts, original)
+
+    def discard(self, key, expected):
+        with self.lock:
+            drafts, original = self._load()
+            if expected is not None and drafts.get(key) == expected:
+                del drafts[key]
+                self._write(drafts, original)
+
+    def _write(self, drafts, original):
+        value = {"schema_version": SCHEMA, **self.identity, "drafts": drafts}
+        temporary = self.path.with_name(".catalogue-draft-" + uuid.uuid4().hex + ".json")
+        try:
+            temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+            _checked_path(self.project, self.path)
+            current = hashlib.sha256(self.path.read_bytes()).hexdigest() if self.path.exists() else None
+            _require(current == original, "CATALOGUE_DRAFT_CHANGED", "Draft bytes changed; no original was overwritten.")
+            temporary.replace(self.path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def get(self, key):
         with self.lock:
@@ -125,6 +135,8 @@ class CatalogueReviewController:
         card = state.get("type_cards", {}).get(type_id)
         return {**_identity(project), "type_id": type_id, "generation": generation, "revision": state["revision"],
                 "membership_fingerprint": membership_fingerprint(member),
+                "card_id": (card or {}).get("card_id"),
+                "title": (card or {}).get("title"),
                 "definition_fingerprint": definition_fingerprint(card) if card else None}
 
     def select(self, project, type_id, *, generation=0, snapshot=None):
@@ -240,18 +252,26 @@ class CatalogueReviewController:
             state = project.service.store.snapshot(project.service.run_id)
             types = {row["local_type_id"]: row for row in state["memberships"]}
             family = types.get(family_id)
-            _require(family is not None and family["parent_type_id"] is None and family["member_ids"], "BATCH_FAMILY_EMPTY", "Select a nonempty current family.")
+            _require(family is not None and family["parent_type_id"] is None, "BATCH_FAMILY_EMPTY", "Choose a current human family.")
             review = self._active(state, family_id)
             continuing = bool(review and review.get("directed_issue_id") and not review.get("closed")
                 and not review.get("archived") and not review_stale_reason(state, review) and review["status"] in ACTIVE | {"ready"})
+            if continuing:
+                _require(self._matches_question(review, context), "DIRECTED_REVIEW_IN_PROGRESS",
+                         "This family already has an open directed question. Continue that round before starting a different question.")
+            else:
+                _require(family["member_ids"], "BATCH_FAMILY_EMPTY", "Choose a family with current members.")
             targets = list(review["item_ids"]) if continuing else sorted(family["member_ids"])
             stub = {"family_id": family_id, "item_ids": targets, "family_member_fingerprint": family_member_fingerprint(state, family_id)}
-            derived = prepare_directed_context(state, stub, context)
+            derived = copy.deepcopy(review["directed_context"]) if continuing else prepare_directed_context(state, stub, context)
             projected_review = project.service.batch.snapshot(state)["reviews"].get(review["review_id"], {}) if review else {}
             scope = {"family_id": family_id, "target_ids": targets, "current_member_ids": sorted(family["member_ids"]),
                 "member_fingerprint": family_member_fingerprint(state, family_id), "definition_fingerprint": family_definition_fingerprint(state, family_id),
-                "route": "direct" if len(targets) <= 30 else "cluster", "continuing": continuing,
+                "route": review["route"] if continuing else "direct" if len(targets) <= 30 else "cluster", "continuing": continuing,
                 "active_review_id": review["review_id"] if review else None, "requires_reopen_reason": bool(review and (review.get("closed") or review_stale_reason(state, review))),
+                "routine_in_progress": bool(review and not review.get("directed_issue_id") and not review.get("closed")
+                    and not review_stale_reason(state, review) and review["status"] in ACTIVE | {"ready"}),
+                "card_revision": (state.get("type_cards", {}).get(family_id) or {}).get("revision"),
                 "direct_exception": copy.deepcopy(projected_review.get("direct_exception", {"allowed": False})),
                 "derived_context": derived, "delivery_scope": copy.deepcopy(state.get("catalogue_scope")),
                 "coverage": self.coverage(project, context["affected_type_ids"], state, context=context)}
@@ -260,7 +280,22 @@ class CatalogueReviewController:
             self._directed[family_id] = value
         return copy.deepcopy(value)
 
-    def continue_directed(self, project, family_id, *, generation):
+    @staticmethod
+    def _matches_question(review, context):
+        original = review["directed_context"]
+        for field in ("question", "basis", "reason"):
+            if context.get(field) != original.get(field):
+                return False
+        for field in ("affected_type_ids", "observation_ids"):
+            values = context.get(field, [])
+            if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+                return False
+            if sorted(values) != sorted(original.get(field, [])):
+                return False
+        parent = context.get("parent_issue_id")
+        return parent is None or parent == original.get("parent_issue_id")
+
+    def continue_directed(self, project, family_id, *, generation, expected_review_id=None):
         with project.service._lock:
             selected = self._directed.get(family_id)
             _require(selected is not None and selected["binding"]["generation"] == generation
@@ -272,6 +307,9 @@ class CatalogueReviewController:
             _require(review is not None and review.get("directed_issue_id") and not review.get("closed")
                      and not review.get("archived") and not review_stale_reason(state, review)
                      and review["status"] in ACTIVE | {"ready"}, "DIRECTED_REVIEW_SCOPE", "Only the current valid unclosed directed round can continue.")
+            _require((expected_review_id is None or review["review_id"] == expected_review_id)
+                     and self._matches_question(review, selected["context"]), "DIRECTED_REVIEW_SCOPE",
+                     "The current question changed. Inspect the open round again.")
             return {"review_id": review["review_id"], "continued": True, "waiting": review["status"] in ACTIVE,
                     "target_ids": list(review["item_ids"]), "return_view": "final"}
 
@@ -299,8 +337,7 @@ class CatalogueReviewController:
                          "CATALOGUE_CONTEXT_CHANGED", "The project or window generation changed.")
                 review = self._active(state, family_id)
                 if review and review.get("directed_issue_id") and not review.get("closed") and not review_stale_reason(state, review) and review["status"] in ACTIVE | {"ready"}:
-                    _require(all(review["directed_context"].get(field) == value for field, value in context.items()
-                                 if field != "parent_issue_id" or value is not None),
+                    _require(self._matches_question(review, context),
                              "DIRECTED_REVIEW_IN_PROGRESS", "Continue the existing current question or finish it before requesting a different one.")
                     return self.continue_directed(project, family_id, generation=generation)
                 _require(self._binding(project, state, family_id, generation) == selected["binding"], "CATALOGUE_CONTEXT_CHANGED", "Members, definitions or state changed; inspect the complete scope again.")
@@ -324,22 +361,32 @@ class CatalogueReviewController:
                 return {**result, "review_id": result["record"]["review"]["review_id"], "continued": False, "waiting": True, "scope": copy.deepcopy(scope)}
 
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, QSize, Signal
+from PySide6.QtGui import QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel,
-    QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QScrollArea,
-    QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
+    QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QPlainTextEdit,
+    QPushButton, QScrollArea, QStackedWidget, QTableWidget, QTableWidgetItem,
+    QTabWidget, QVBoxLayout, QWidget,
 )
+from .annotation_desktop_directed import DirectedWorkflow
+from .annotation_manual_protocol import definition_content
 
 
 def _scroll_page(tabs, title):
-    scroll = QScrollArea(); scroll.setWidgetResizable(True)
-    content = QWidget(); layout = QVBoxLayout(content); scroll.setWidget(content); tabs.addTab(scroll, title)
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    content = QWidget()
+    layout = QVBoxLayout(content)
+    scroll.setWidget(content)
+    tabs.addTab(scroll, title)
     return layout
 
 
 def _list():
-    widget = QListWidget(); widget.setMaximumHeight(150); return widget
+    widget = QListWidget()
+    widget.setMaximumHeight(150)
+    return widget
 
 
 def _checked(widget):
@@ -352,7 +399,7 @@ def _choices(widget, ids, checked=(), *, allowed=None):
     selected = set(checked)
     for ident in dict.fromkeys([*ids, *checked]):
         valid = allowed is None or ident in allowed
-        item = QListWidgetItem(ident + (" · outside current allowed scope" if not valid else ""))
+        item = QListWidgetItem(ident + (' · outside current allowed scope' if not valid else ''))
         item.setData(Qt.ItemDataRole.UserRole, ident)
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
         item.setCheckState(Qt.CheckState.Checked if ident in selected else Qt.CheckState.Unchecked)
@@ -361,7 +408,31 @@ def _choices(widget, ids, checked=(), *, allowed=None):
         widget.addItem(item)
 
 
-class CatalogueReviewDialog(QDialog):
+def _name(row):
+    return (row.get('card') or {}).get('title') or row.get('title') or row['local_type_id']
+
+
+def _status(row):
+    return {"missing": "Not defined", "stale": "Needs review", "draft": "Draft",
+            "reviewed": "Reviewed"}.get(row["definition_state"], row["definition_state"])
+
+
+def _label(text=''):
+    label = QLabel(text)
+    label.setTextFormat(Qt.TextFormat.PlainText)
+    label.setWordWrap(True)
+    return label
+
+
+def _heading(text):
+    label = _label(text)
+    font = label.font()
+    font.setBold(True)
+    label.setFont(font)
+    return label
+
+
+class CatalogueReviewDialog(DirectedWorkflow, QDialog):
     auditionRequested = Signal(str, bool)
     fineRequested = Signal(str)
     stopRequested = Signal()
@@ -370,388 +441,615 @@ class CatalogueReviewDialog(QDialog):
 
     def __init__(self, owner, on_review_selected=None):
         super().__init__(owner)
-        self.owner, self.project = owner, owner.project
+        self.owner, self.project = (owner, owner.project)
         self.generation = owner._close_coordinator.generation
         self.controller = CatalogueReviewController()
         self.on_review_selected = on_review_selected
-        self.type_id = None; self._dirty = False; self._directed_dirty = False; self._loading = False
-        self._directed_family_id = None
-        self._waiting = False; self._pending_review_id = None; self._directed_draft_binding = None
-        self.setWindowTitle("Type definitions and directed review")
+        self.type_id = None
+        self._dirty = self._directed_dirty = self._loading = self._waiting = False
+        self._directed_family_id = self._pending_review_id = self._directed_draft_binding = None
+        self._row = self._card_binding = self._prior_draft = self._revision = None
+        self._directory_rows = []
+        self._audition_id = None
+        self._store = CatalogueDraftStore(self.project)
+        self.setWindowTitle('Type definitions')
         screen = self.screen().availableGeometry()
-        self.resize(min(1100, int(screen.width() * .94)), min(850, int(screen.height() * .9)))
+        self.resize(min(900, screen.width() - 32), min(690, screen.height() - 60))
         outer = QVBoxLayout(self)
-        self.tabs = QTabWidget(); outer.addWidget(self.tabs, 1)
-        self._build_card(); self._build_directed()
-        self.message = QLabel("Select a human family or leaf. Examples must be explicitly selected; no labels or completion are inferred.")
-        self.message.setWordWrap(True); outer.addWidget(self.message)
+        self.tabs = QTabWidget()
+        self.tabs.tabBar().hide()
+        outer.addWidget(self.tabs, 1)
+        self._build_card()
+        self._build_directed()
+        self.message = _label()
+        outer.addWidget(self.message)
         footer = QHBoxLayout()
-        self.save_draft_button = QPushButton("Save draft")
-        self.save_draft_button.setToolTip("Save unsubmitted card and directed inputs; no authoritative decision is written.")
-        self.save_card_button = QPushButton("Save card")
-        self.save_card_button.setToolTip("Save this explicit type card and its explicitly selected definition status.")
-        self.prepare_button = QPushButton("Prepare / continue")
-        self.prepare_button.setToolTip("Prepare or continue only the inspected complete directed family scope.")
-        stop, close = QPushButton("Stop playback"), QPushButton("Close")
-        for button in (self.save_draft_button, self.save_card_button, self.prepare_button, stop, close): footer.addWidget(button)
+        self.directory_button = self._button('All definitions', 'allDefinitions', lambda: self.show_card())
+        footer.addWidget(self.directory_button)
+        self.more_button = QPushButton('More…')
+        menu = QMenu(self.more_button)
+        self.draft_action = menu.addAction("Save draft definition…", lambda: self._guard(lambda: self._ask_save("draft")))
+        menu.addAction('Definition history…', lambda: self._guard(self._show_history))
+        self.more_button.setMenu(menu)
+        footer.addWidget(self.more_button)
+        footer.addStretch()
+        self.save_card_button = self._button("Confirm definition…", "confirmDefinition", lambda: self._ask_save("reviewed"))
+        footer.addWidget(self.save_card_button)
+        close = QPushButton('Close')
+        close.clicked.connect(self.reject)
+        footer.addWidget(close)
         outer.addLayout(footer)
-        self.save_draft_button.clicked.connect(lambda: self._guard(self.save_draft))
-        self.save_card_button.clicked.connect(lambda: self._guard(self._save_card))
-        self.prepare_button.clicked.connect(lambda: self._guard(self._prepare))
-        stop.clicked.connect(self.stop); close.clicked.connect(self.reject)
-        self.timer = QTimer(self); self.timer.setInterval(350); self.timer.timeout.connect(lambda: self._guard(self.refresh))
+        self.tabs.currentChanged.connect(lambda _i: self._set_enabled())
+        self.timer = QTimer(self)
+        self.timer.setInterval(350)
+        self.timer.timeout.connect(lambda: self._guard(self.refresh))
         self.finished.connect(lambda _result: self.timer.stop())
         self.owner.operationFailed.connect(self._operation_failed)
+        self.refresh()
+
+    def _button(self, title, name, action):
+        button = QPushButton(title)
+        button.setObjectName(name)
+        button.setAutoDefault(False)
+        button.clicked.connect(lambda _checked=False: self._guard(action))
+        return button
 
     def _build_card(self):
-        layout = _scroll_page(self.tabs, "Type cards and human examples")
-        self.types = QTableWidget(0, 5); self.types.setMaximumHeight(170)
-        self.types.setHorizontalHeaderLabels(["Type", "Parent family", "Members", "Definition state", "Pending relation review"])
+        self.card_pages = QStackedWidget()
+        self.tabs.addTab(self.card_pages, 'Definitions')
+        self.directory = QWidget()
+        self.card_pages.addWidget(self.directory)
+        layout = QVBoxLayout(self.directory)
+        layout.addWidget(_heading("Type definitions"))
+        bar = QHBoxLayout()
+        self.filter = QLineEdit()
+        self.filter.setPlaceholderText('Find a family or fine type…')
+        self.filter.setAccessibleName('Find type')
+        self.filter.textChanged.connect(self._filter_directory)
+        bar.addWidget(self.filter, 1)
+        self.attention_filter = QComboBox()
+        self.attention_filter.addItems(['All types', 'Needs attention', 'Reviewed'])
+        self.attention_filter.currentIndexChanged.connect(self._filter_directory)
+        bar.addWidget(self.attention_filter)
+        layout.addLayout(bar)
+        self.types = QTableWidget(0, 4)
+        self.types.setObjectName('typeDirectory')
+        self.types.setHorizontalHeaderLabels(['Type', 'Level', 'Members', 'Definition'])
+        self.types.verticalHeader().hide()
+        self.types.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for col in (1, 2, 3):
+            self.types.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
         self.types.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.types.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.types.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.types.itemSelectionChanged.connect(self._select_row); layout.addWidget(self.types)
-        self.type_details = QLabel("No type selected."); self.type_details.setWordWrap(True); layout.addWidget(self.type_details)
-        form = QFormLayout(); self.texts = {}
-        for key in ("title", "diagnostic_body", "main_variant_difference", "uncertainties", "reason"):
-            field = QPlainTextEdit(); field.setMaximumHeight(85); field.textChanged.connect(self._changed)
-            self.texts[key] = field; form.addRow(key, field)
-        self.status = QComboBox(); self.status.addItem("Draft — not reviewed", "draft"); self.status.addItem("Reviewed explicitly by operator", "reviewed")
-        self.status.currentIndexChanged.connect(self._changed); form.addRow("Definition status", self.status); layout.addLayout(form)
-        self.members = _list(); layout.addWidget(QLabel("All current members (stable IDs; listening never confirms a card automatically)")); layout.addWidget(self.members)
-        self.members.itemDoubleClicked.connect(lambda item: self.auditionRequested.emit(item.data(Qt.ItemDataRole.UserRole), False))
-        listen = QHBoxLayout()
-        for text, action in (("Inspect selected segment", lambda ident: self.auditionRequested.emit(ident, False)),
-                             ("Inspect verified parent", lambda ident: self.auditionRequested.emit(ident, True)),
-                             ("Open selected Fine review", self.fineRequested.emit)):
-            button = QPushButton(text); button.clicked.connect(lambda _checked=False, action=action: self._inspect_member(action)); listen.addWidget(button)
-        layout.addLayout(listen)
-        self.examples = {}
-        for key in EXAMPLE_FIELDS:
-            widget = _list(); widget.itemChanged.connect(self._changed)
-            if key != "competing_type_ids":
-                widget.itemDoubleClicked.connect(lambda item: self.auditionRequested.emit(item.data(Qt.ItemDataRole.UserRole), False))
-            self.examples[key] = widget; layout.addWidget(QLabel(key + " — operator-selected stable IDs")); layout.addWidget(widget)
-        self.review_confirmation = QCheckBox("I explicitly reviewed the current definition and the selected examples / relationships.")
-        self.review_confirmation.toggled.connect(lambda _checked: self._set_enabled()); layout.addWidget(self.review_confirmation)
-        actions = QHBoxLayout()
-        self.refresh_context_button = QPushButton("Refresh current context; keep typed draft")
-        self.restore_card_button = QPushButton("Restore unsubmitted card inputs")
-        actions.addWidget(self.refresh_context_button); actions.addWidget(self.restore_card_button); layout.addLayout(actions)
-        self.refresh_context_button.clicked.connect(lambda: self._guard(self._refresh_context))
-        self.restore_card_button.clicked.connect(lambda: self._guard(self._restore_card))
+        self.types.cellClicked.connect(self._open_row)
+        self.types.cellActivated.connect(self._open_row)
+        layout.addWidget(self.types, 1)
+        self.empty_label = _label()
+        layout.addWidget(self.empty_label)
 
-    def _build_directed(self):
-        layout = _scroll_page(self.tabs, "One complete family per directed round")
+        self.editor = QScrollArea()
+        self.editor.setWidgetResizable(True)
+        body = QWidget()
+        edit = QVBoxLayout(body)
+        self.editor.setWidget(body)
+        self.card_pages.addWidget(self.editor)
+        header = QHBoxLayout()
+        self.card_title = _heading('')
+        self.card_title.setObjectName('cardTitle')
+        header.addWidget(self.card_title, 1)
+        self.directed_button = self._button("Start directed review…","startDirectedReview",
+                                            lambda: self.show_directed(self._row["family_id"]))
+        header.addWidget(self.directed_button)
+        edit.addLayout(header)
+        self.type_details = _label()
+        edit.addWidget(self.type_details)
+        self.texts = {}
         form = QFormLayout()
-        self.directed_family = QComboBox(); self.directed_family.setMinimumWidth(0)
-        self.directed_family.addItem("Choose a family", None); self.directed_family.currentIndexChanged.connect(self._directed_family_changed)
-        self.directed_texts = {}
-        for key in ("question", "reason", "purpose", "reopen_reason", "observation_ids", "parent_issue_id", "exception_reason"):
-            field = QLineEdit(); field.textChanged.connect(self._directed_changed); self.directed_texts[key] = field
-        self.basis = QComboBox(); self.basis.addItem("Choose actual reopening basis", None)
-        for basis in sorted(REOPEN_BASES): self.basis.addItem(basis, basis)
-        self.basis.currentIndexChanged.connect(self._directed_changed)
-        form.addRow("Complete family", self.directed_family); form.addRow("Actual basis", self.basis)
-        for key, field in self.directed_texts.items(): form.addRow(key, field)
-        layout.addLayout(form)
-        self.affected = _list(); self.affected.itemChanged.connect(self._directed_changed)
-        layout.addWidget(QLabel("Explicitly affected types — include this family; each other family still needs a separate complete round")); layout.addWidget(self.affected)
-        self.direct_exception = QCheckBox("Use only the current bound numerical-failure exception")
-        self.direct_exception.toggled.connect(self._directed_changed); layout.addWidget(self.direct_exception)
-        self.delivery = QLabel("Delivery level and unresolved policy come from the saved scope.")
-        self.delivery.setWordWrap(True); layout.addWidget(self.delivery)
-        buttons = QHBoxLayout(); self.inspect_scope_button = QPushButton("Inspect this exact question / complete scope")
-        self.restore_directed_button = QPushButton("Restore unsubmitted directed inputs")
-        buttons.addWidget(self.inspect_scope_button); buttons.addWidget(self.restore_directed_button); layout.addLayout(buttons)
-        self.inspect_scope_button.clicked.connect(lambda: self._guard(self._inspect_directed))
-        self.restore_directed_button.clicked.connect(lambda: self._guard(self._restore_directed))
-        self.directed_scope = QPlainTextEdit(); self.directed_scope.setReadOnly(True); self.directed_scope.setMaximumHeight(210); layout.addWidget(self.directed_scope)
-        self.coverage_table = QTableWidget(0, 5); self.coverage_table.setHorizontalHeaderLabels(["Required family", "Current members", "Prepared round", "Status", "Closed/current"])
-        self.coverage_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers); self.coverage_table.setMaximumHeight(180); layout.addWidget(self.coverage_table)
-        self.history = QTableWidget(0, 5); self.history.setHorizontalHeaderLabels(["Review", "Family", "Question", "State", "Current / historical"])
-        self.history.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers); self.history.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.history.setMaximumHeight(170); layout.addWidget(self.history)
-        self.continue_button = QPushButton("Continue selected current unclosed directed round")
-        self.continue_button.clicked.connect(lambda: self._guard(self._continue)); layout.addWidget(self.continue_button)
+        edit.addLayout(form)
+        self.name_edit = QLineEdit()
+        self.name_edit.setObjectName("card_title")
+        self.name_edit.textChanged.connect(self._changed)
+        form.addRow("Name", self.name_edit)
+        for key, label, height in [("diagnostic_body", "Diagnostic criteria", 65),
+                                   ("main_variant_difference", "Fine-form difference", 48)]:
+            field = QPlainTextEdit()
+            field.setFixedHeight(height)
+            field.setObjectName('card_' + key)
+            field.textChanged.connect(self._changed)
+            form.addRow(label, field)
+            self.texts[key] = field
+        self.main_variant_label = form.labelForField(self.texts['main_variant_difference'])
+        self.texts['diagnostic_body'].setPlaceholderText('What can you hear or see that distinguishes this type?')
+        self.texts['main_variant_difference'].setPlaceholderText('How does this form differ from another form in the family?')
+        edit.addWidget(_heading("Representative syllables"))
+        self.representatives = QListWidget()
+        self.representatives.setObjectName('cardRepresentatives')
+        self.representatives.setMaximumHeight(123)
+        self.representatives.setIconSize(QSize(58, 32))
+        self.representatives.itemDoubleClicked.connect(lambda item: self._audition(item.data(Qt.ItemDataRole.UserRole)))
+        self.representatives.itemSelectionChanged.connect(self._set_enabled)
+        edit.addWidget(self.representatives)
+        repbar = QHBoxLayout()
+        self.member_combo = QComboBox()
+        self.member_combo.setAccessibleName('Current member')
+        self.member_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.member_combo.setMinimumContentsLength(15)
+        repbar.addWidget(self.member_combo, 1)
+        self.add_member_button=self._button("Add member", "cardAddMember",
+                                            lambda: self.add_representatives(self.type_id,[self.member_combo.currentData()]))
+        repbar.addWidget(self.add_member_button)
+        chosen_actions = QHBoxLayout()
+        self.listen_rep_button = self._button('Listen to selected', 'cardListen', self._listen_rep)
+        chosen_actions.addWidget(self.listen_rep_button)
+        self.remove_rep_button = self._button('Remove selected', 'cardRemoveRepresentative', self._remove_rep)
+        chosen_actions.addWidget(self.remove_rep_button)
+        chosen_actions.addStretch()
+        edit.addLayout(chosen_actions)
+        self.members_tools = QPushButton('Inspect member…')
+        tools = QMenu(self.members_tools)
+        tools.addAction('Segment and spectrogram', lambda: self._inspect_member(lambda i: self._audition(i)))
+        tools.addAction('Verified parent recording', lambda: self._inspect_member(lambda i: self._audition(i, True)))
+        tools.addAction('Fine review…', lambda: self._inspect_member(self.fineRequested.emit))
+        self.members_tools.setMenu(tools)
+        repbar.addWidget(self.members_tools)
+        edit.addLayout(repbar)
+        self.extra_button = QPushButton('Additional evidence')
+        self.extra_button.setCheckable(True)
+        self.extra_button.setObjectName('additionalEvidence')
+        optbar = QHBoxLayout()
+        optbar.addWidget(self.extra_button)
+        optbar.addStretch()
+        edit.addLayout(optbar)
+        self.extra = QWidget()
+        extra = QVBoxLayout(self.extra)
+        extra.setContentsMargins(0, 0, 0, 0)
+        edit.addWidget(self.extra)
+        self.extra_button.toggled.connect(self.extra.setVisible)
+        self.extra_button.toggled.connect(self._load_evidence)
+        self.extra.hide()
+        self.examples = {}
+        for key,title in (("atypical_ids","Atypical members"),("counterexample_ids","Counterexamples outside this type"),
+                          ("competing_type_ids","Confusable types")):
+            widget = _list()
+            widget.itemChanged.connect(self._changed)
+            self.examples[key] = widget
+            if key != 'competing_type_ids':
+                widget.itemDoubleClicked.connect(lambda item: self._audition(item.data(Qt.ItemDataRole.UserRole)))
+            extra.addWidget(_heading(title))
+            extra.addWidget(widget)
+        field = QPlainTextEdit()
+        field.setFixedHeight(52)
+        field.textChanged.connect(self._changed)
+        self.texts['uncertainties'] = field
+        extra.addWidget(_label('Uncertainties'))
+        extra.addWidget(field)
+        self.refresh_context_button = self._button('Review changed context…', 'refreshDefinition', self._refresh_context)
+        self.restore_card_button = self._button('Use earlier draft…', 'restoreDefinitionDraft', self._restore_card)
+        notices = QHBoxLayout()
+        notices.addWidget(self.refresh_context_button)
+        notices.addWidget(self.restore_card_button)
+        notices.addStretch()
+        edit.addLayout(notices)
+        edit.addStretch()
 
     def _current(self):
-        return self.owner.project is self.project and self.owner._close_coordinator.generation == self.generation and self.owner._close_coordinator.state == "open"
+        return self.owner.project is self.project and self.owner._close_coordinator.accepts_callback(self.generation)
 
     def _guard(self, call):
-        try: return call()
+        try:
+            return call()
         except Exception as exc:
-            self.message.setText(system_error(exc)); self.owner._error(exc, operation="type definitions and review"); self._set_enabled()
+            self.message.setText(system_error(exc))
+            self.owner._error(exc, operation='type definitions and review')
+            self._set_enabled()
 
     def _operation_failed(self, message):
-        if self._waiting: self.message.setText(message)
+        if self._waiting:
+            self._waiting = False
+            self.message.setText(message)
+            self._set_enabled()
 
     def _changed(self, *_args):
-        if not self._loading:
-            self._dirty = True; self.review_confirmation.setChecked(False)
-        if hasattr(self, "save_card_button"): self._set_enabled()
+        if self._loading:
+            return
+        self._dirty = True
+        self._update_card_summary()
+        self._set_enabled()
 
-    def _directed_changed(self, *_args):
-        if not self._loading:
-            self._directed_dirty = True; self.controller._directed.clear(); self.directed_scope.clear()
-        if hasattr(self, "prepare_button"): self._set_enabled()
+    def _open_row(self, row, _column):
+        item = self.types.item(row, 0)
+        if item is not None:
+            self._guard(lambda: self.show_card(item.data(Qt.ItemDataRole.UserRole)))
 
-    def _select_row(self):
-        if self._loading or not self._current(): return
-        row = self.types.currentRow()
-        if row < 0: return
-        previous = self.type_id
-        try: self.select_type(self.types.item(row, 0).text())
-        except Exception as exc:
-            self._loading = True
-            for index in range(self.types.rowCount()):
-                if self.types.item(index, 0).text() == previous: self.types.selectRow(index); break
-            self._loading = False; self._guard(lambda: (_ for _ in ()).throw(exc))
+    def _filter_directory(self, *_args):
+        q = self.filter.text().strip().casefold()
+        mode = self.attention_filter.currentIndex()
+        rows_by_id = {r['local_type_id']: r for r in self._directory_rows}
+        def attention(r):
+            return r['definition_state'] != 'reviewed' or bool(r.get('definition_review_required_ids'))
+        rows = sorted(self._directory_rows, key=lambda r: (not attention(r), _name(r).casefold(), r['local_type_id']))
+        if mode:
+            rows = [row for row in rows if attention(row) == (mode == 1)]
+        if q:
+            rows = [row for row in rows if q in (_name(row) + " " + row["local_type_id"]).casefold()]
+        self.types.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            key = r['local_type_id']
+            parent = r['parent_type_id']
+            level = 'Family' if parent is None else 'Fine form · ' + _name(rows_by_id[parent])
+            state = 'Review pending' if r.get('definition_review_required_ids') else _status(r)
+            for col, val in enumerate((_name(r), level, str(r['member_count']), state)):
+                item = QTableWidgetItem(val)
+                item.setData(Qt.ItemDataRole.UserRole, key)
+                item.setToolTip(key)
+                self.types.setItem(i, col, item)
+        self.empty_label.setText("No matching types." if self._directory_rows else
+                                 "Create a human family in the review workspace to define it here.")
+        self.empty_label.setVisible(not rows)
+
+    def show_card(self, type_id=None):
+        if type_id is None:
+            self.save_draft()
+            self.card_pages.setCurrentWidget(self.directory)
+            self.message.clear()
+        else:
+            self.select_type(type_id)
+            self.card_pages.setCurrentWidget(self.editor)
+        self.tabs.setCurrentIndex(0)
+        self._set_enabled()
 
     def select_type(self, type_id):
-        if self._dirty or self._directed_dirty: self.save_draft()
+        _require(self._current() and (not self._waiting), 'CATALOGUE_BUSY', 'Wait for the current card operation.')
+        self.save_draft()
         state = self.project.snapshot()
         selected = self.controller.select(self.project, type_id, generation=self.generation, snapshot=state)
-        self.owner.state = state; self.type_id = type_id
-        self._fill_card(selected["selection"].get("card") or {})
-        self._render_directory(selected)
-        family = selected["selection"]["family_id"]
-        self._loading = True; self.directed_family.setCurrentIndex(self.directed_family.findData(family)); self._loading = False
-        self._directed_family_changed()
+        self.owner.state = state
+        self.type_id = type_id
+        self._row = selected['selection']
+        self._card_binding = selected['binding']
+        self._directory_rows = selected['types']
+        self._prior_draft = None
+        payload = self._row.get('card') or {}
+        record = self._store.get('card:' + type_id)
+        notice = ''
+        if record is not None:
+            fields = ('membership_fingerprint', 'definition_fingerprint', 'card_id', 'title')
+            if all((record['binding'][k] == self._card_binding[k] for k in fields if k in record['binding'])):
+                payload = record['payload']
+                notice = 'Unsubmitted edits restored.'
+            else:
+                self._prior_draft = record
+                notice = 'Members or the saved definition changed. Choose which inputs to use before editing.'
+        self._fill_card(payload)
+        self.message.setText(notice)
         self._set_enabled()
         return selected
 
-    def _render_directory(self, view):
-        self._loading = True
-        self.types.setRowCount(len(view["types"]))
-        for index, row in enumerate(view["types"]):
-            for column, value in enumerate((row["local_type_id"], row["parent_type_id"] or "family", row["member_count"], row["definition_state"], len(row.get("definition_review_required_ids", [])))):
-                self.types.setItem(index, column, QTableWidgetItem(str(value)))
-            if row["local_type_id"] == self.type_id: self.types.selectRow(index)
-        current_family = self.directed_family.currentData()
-        self.directed_family.clear(); self.directed_family.addItem("Choose a family", None)
-        for row in view["types"]:
-            if row["parent_type_id"] is None: self.directed_family.addItem(row["local_type_id"], row["local_type_id"])
-        self.directed_family.setCurrentIndex(max(0, self.directed_family.findData(current_family)))
-        checked = _checked(self.affected)
-        _choices(self.affected, [row["local_type_id"] for row in view["types"]], checked)
-        self.history.setRowCount(len(view.get("directed_reviews", [])))
-        for index, row in enumerate(view.get("directed_reviews", [])):
-            for column, value in enumerate((row["review_id"], row["family_id"], row.get("question"), "closed" if row["closed"] else "open", "history only" if row["historical_only"] or row["scope_stale"] else "current")):
-                self.history.setItem(index, column, QTableWidgetItem(str(value)))
-        self._loading = False
-
     def _fill_card(self, payload):
         self._loading = True
-        for key, field in self.texts.items(): field.setPlainText(payload.get(key, "") if key != "reason" else "")
-        self.status.setCurrentIndex(max(0, self.status.findData(payload.get("definition_status", "draft"))))
-        selected = self.controller.snapshot()["selection"]
-        all_ids = list(self.project.dataset.item_ids); members = set(selected["member_ids"])
-        self.members.clear()
-        for ident in selected["member_ids"]:
-            item = QListWidgetItem(ident); item.setData(Qt.ItemDataRole.UserRole, ident); self.members.addItem(item)
-        types = [row["local_type_id"] for row in self.controller.snapshot()["types"] if row["local_type_id"] != self.type_id]
-        for key, widget in self.examples.items():
-            allowed = set(types) if key == "competing_type_ids" else set(all_ids) - members if key == "counterexample_ids" else members
-            _choices(widget, types if key == "competing_type_ids" else all_ids, payload.get(key, []), allowed=allowed)
-        self.review_confirmation.setChecked(False)
-        self.type_details.setText(f"{self.type_id} · {selected['definition_state']} · Parent: {selected['parent_type_id']} · {len(members)} current members. "
-                                 "Draft/local restoration is not a reviewed definition or a completed directed round.")
-        self._loading = False; self._dirty = False
-
-    def payload(self):
-        return {"local_type_id": self.type_id, **{key: field.toPlainText() for key, field in self.texts.items()},
-                "definition_status": self.status.currentData(), **{key: _checked(widget) for key, widget in self.examples.items()}}
-
-    def _directed_payload(self):
-        values = {key: field.text() for key, field in self.directed_texts.items()}
-        context = {"question": values["question"], "reason": values["reason"], "basis": self.basis.currentData(),
-                   "affected_type_ids": _checked(self.affected), "observation_ids": [value.strip() for value in values["observation_ids"].split(",") if value.strip()],
-                   "parent_issue_id": values["parent_issue_id"].strip() or None}
-        return {"context": context, "family_id": self.directed_family.currentData(), "purpose": values["purpose"],
-                "reopen_reason": values["reopen_reason"], "use_direct_exception": self.direct_exception.isChecked(), "exception_reason": values["exception_reason"]}
-
-    def prefill_directed_question(self, value):
-        """Carry an explicit D3 question into an unsubmitted form, without preparing B."""
-        _require(self._current() and not self.owner._busy, "CATALOGUE_BUSY", "Reopen type definitions after the current operation.")
-        _require(isinstance(value, dict), "CATALOGUE_QUESTION", "Select one human question first.")
-        state = self.project.snapshot()
-        types = {row["local_type_id"]: row for row in state.get("memberships", [])}
-        family = value.get("family_id")
-        affected = value.get("affected_type_ids")
-        question = value.get("question")
-        _require(family in types and types[family]["parent_type_id"] is None
-                 and isinstance(affected, list) and family in affected and set(affected) <= set(types)
-                 and isinstance(question, str) and bool(question.strip()),
-                 "CATALOGUE_QUESTION", "Select a current family, affected types and a specific question.")
-        self.select_type(family)  # Saves any previous input before replacing the form.
-        self._loading = True
         try:
-            for field in self.directed_texts.values():
-                field.clear()
-            self.directed_texts["question"].setText(question.strip())
-            self.directed_texts["reason"].setText(value.get("reason", ""))
-            self.basis.setCurrentIndex(0)
-            _choices(self.affected, list(types), affected)
-            self.direct_exception.setChecked(False)
+            self.name_edit.setText(payload.get("title", _name(self._row)))
+            for key, field in self.texts.items():
+                field.setPlainText(payload.get(key, ""))
+            self._reason = payload.get('reason', '') if 'local_type_id' in payload and 'card_id' not in payload else ''
+            self._draft_status = payload.get('definition_status', 'draft')
+            self._members = set(self._row['member_ids'])
+            self.member_combo.clear()
+            for ident in self._row['member_ids']:
+                self.member_combo.addItem(ident, ident)
+            self.representatives.clear()
+            for ident in payload.get('representative_ids', []):
+                self._append_rep(ident)
+            self._optional_values = {key: list(payload.get(key, [])) for key in self.examples}
+            self._optional_loaded = False
+            for widget in self.examples.values():
+                widget.clear()
+            leaf = self._row['parent_type_id'] is not None
+            show_difference = leaf or bool(payload.get("main_variant_difference"))
+            self.main_variant_label.setVisible(show_difference)
+            self.texts["main_variant_difference"].setVisible(show_difference)
+            self.card_title.setText(_name(self._row))
+            self.type_details.setToolTip(self.type_id)
+            self.extra_button.setChecked(False)
+            self.editor.verticalScrollBar().setValue(0)
+            self._dirty = False
         finally:
             self._loading = False
-        self._directed_changed()
-        self.tabs.setCurrentIndex(1)
-        self.message.setText("Assessment question copied as unsubmitted input. Choose the actual basis and purpose, inspect current scope, then explicitly prepare a review. Keeping labels and reporting limitations is also valid.")
-        self._set_enabled()
-        return self._directed_payload()
+        self._update_card_summary()
+
+    def _rep_ids(self):
+        return [self.representatives.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.representatives.count())]
+
+    def _append_rep(self, ident):
+        item = QListWidgetItem(ident if ident in self._members else ident + ' · outside current members')
+        item.setData(Qt.ItemDataRole.UserRole, ident)
+        self.representatives.addItem(item)
+        # Use the frozen overview patch. The exact time/frequency view is available via Listen.
+        dataset = self.project.dataset
+        if ident in self._members and dataset.logmel.shape[1:] == (2048,):
+            import numpy as np
+            patch = dataset.logmel[dataset._items[ident]['feature_row_index']].reshape(64, 32)
+            lo, hi = (float(patch.min()), float(patch.max()))
+            pixels = np.ascontiguousarray(255 - 255 * (patch[::-1] - lo) / max(hi - lo, 1e-12), dtype=np.uint8)
+            image = QImage(pixels.data, 32, 64, 32, QImage.Format.Format_Grayscale8).copy()
+            thumb = image.scaled(58, 32, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            item.setIcon(QIcon(QPixmap.fromImage(thumb)))
+            item.setToolTip("Log-mel thumbnail · double-click for the full spectrogram and audio.")
+
+    def _remove_rep(self):
+        i = self.representatives.currentRow()
+        if i >= 0:
+            self.representatives.takeItem(i)
+            self._changed()
+
+    def _audition(self, ident, context=False):
+        if ident:
+            self._audition_id = ident
+            self.auditionRequested.emit(ident, context)
+
+    def _listen_rep(self):
+        item = self.representatives.currentItem()
+        if item:
+            self._audition(item.data(Qt.ItemDataRole.UserRole))
+
+    def _inspect_member(self, action):
+        ident = self.member_combo.currentData()
+        if ident:
+            self._guard(lambda: action(ident))
+
+    def _load_evidence(self, expanding):
+        if not expanding or self._optional_loaded:
+            return
+        self._loading = True
+        try:
+            types = {r['local_type_id']: _name(r) for r in self._directory_rows if r['local_type_id'] != self.type_id}
+            options = {"competing_type_ids": sorted(types, key=lambda k: types[k].casefold()),
+                       "atypical_ids": self._row["member_ids"],
+                       "counterexample_ids": [i for i in self.project.dataset.item_ids if i not in self._members]}
+            for key, widget in self.examples.items():
+                _choices(widget, options[key], self._optional_values[key], allowed=set(options[key]))
+                if key == "competing_type_ids":
+                    for j in range(widget.count()):
+                        item = widget.item(j)
+                        ident = item.data(Qt.ItemDataRole.UserRole)
+                        if ident in types:
+                            item.setText(types[ident])
+                            item.setToolTip(ident)
+            self._optional_loaded = True
+        finally:
+            self._loading = False
+
+    def _update_card_summary(self):
+        value = self.payload()
+        card = self._row.get("card") or {}
+        changed = (any(value[k] != card.get(k, "") for k in self.texts)
+                   or any(sorted(value[k]) != sorted(card.get(k, [])) for k in EXAMPLE_FIELDS)
+                   or value["title"] != card.get("title", _name(self._row)) or bool(self._reason))
+        status = _status(self._row)
+        if changed:
+            status = f"Unsubmitted edits · Saved definition: {status}"
+        level = "Fine form" if self._row["parent_type_id"] else "Family"
+        self.type_details.setText(f"{status} · {len(self._members)} members · {level}")
+        count = sum(len(value[k]) for k in self.examples) + bool(value["uncertainties"].strip())
+        self.extra_button.setText(f'Additional evidence ({count})' if count else 'Additional evidence')
+
+    def add_representatives(self, type_id, ids):
+        ids = list(dict.fromkeys(ids))
+        _require(bool(ids),"TYPE_EXAMPLE_SCOPE","Select at least one saved member to add.")
+        state = self.project.snapshot()
+        row = next((r for r in state['memberships'] if r['local_type_id'] == type_id), None)
+        _require(row is not None and set(ids)<=set(row["member_ids"]),"TYPE_EXAMPLE_SCOPE",
+                 "Each selected syllable must be a saved member of this type.")
+        self.show_card(type_id)
+        _require(self._prior_draft is None, 'CATALOGUE_DRAFT_CHANGED', 'Resolve the earlier draft before adding representatives.')
+        known = set(self._rep_ids())
+        new = [i for i in ids if i not in known]
+        for i in new:
+            self._append_rep(i)
+        for j in range(self.representatives.count()):
+            if self.representatives.item(j).data(Qt.ItemDataRole.UserRole) == ids[0]:
+                self.representatives.setCurrentRow(j)
+                break
+        if new:
+            self._changed()
+            self.save_draft()
+        self.message.setText(f"Added to card draft: {len(new)}." if new else "Already included in this card.")
+        return self._rep_ids()
+
+    def payload(self):
+        evidence = ({k: _checked(w) for k, w in self.examples.items()} if self._optional_loaded
+                    else copy.deepcopy(self._optional_values))
+        return {"local_type_id": self.type_id, "title": self.name_edit.text(),
+                **{k: w.toPlainText() for k, w in self.texts.items()}, **evidence,
+                "representative_ids": self._rep_ids(), "definition_status": self._draft_status, "reason": self._reason}
 
     def save_draft(self):
         if self._dirty and self.type_id:
-            self.controller.save_draft(self.project, self.payload()); self._dirty = False
-        if self._directed_dirty and self._directed_family_id:
-            value = self._directed_payload(); value["family_id"] = self._directed_family_id
-            self.controller.save_draft(self.project, value, kind="directed", type_id=self._directed_family_id,
-                generation=self.generation, binding=self._directed_draft_binding); self._directed_dirty = False
+            self.controller.save_draft(self.project, self.payload(), binding=self._card_binding)
+            self._dirty = False
+        self._save_directed_draft()
         return True
 
     def _refresh_context(self):
-        payload = self.payload(); self.save_draft()
-        self.controller.select(self.project, self.type_id, generation=self.generation)
-        self._fill_card(payload); self.texts["reason"].setPlainText(payload["reason"])
-        self._dirty = True; self.message.setText("Current members and definition refreshed. Typed inputs remain unsubmitted; explicitly review again.")
+        if self._prior_draft:
+            self._store.discard('card:' + self.type_id, self._prior_draft)
+            self._prior_draft = None
+        self.select_type(self.type_id)
 
     def _restore_card(self):
-        value = self.controller.restore_draft(self.project, self.type_id, generation=self.generation)
-        self._fill_card(value["payload"]); self.texts["reason"].setPlainText(value["payload"].get("reason", "")); self._dirty = True
-        self.message.setText("Unsubmitted inputs restored; confirmation cleared." + (" Context changed: refresh and inspect before saving." if value["stale_for_current_context"] else ""))
-
-    def _inspect_member(self, action):
-        item = self.members.currentItem()
-        _require(item is not None, "MEDIA_IDS", "Select the exact stable member ID to inspect.")
-        action(item.data(Qt.ItemDataRole.UserRole))
+        record = self._prior_draft
+        if record:
+            self._prior_draft = None
+            self._fill_card(record['payload'])
+            self._dirty = True
+            self.save_draft()
+            self._set_enabled()
+            self.message.setText('Earlier inputs restored. Review the current members before confirming.')
 
     def _before_change(self):
         self.save_draft()
-        if hasattr(self.owner, "before_catalogue_change"): self.owner.before_catalogue_change()
+        if hasattr(self.owner, 'before_catalogue_change'):
+            self.owner.before_catalogue_change()
 
-    def _save_card(self):
-        _require(self._current() and not self.owner._busy, "CATALOGUE_BUSY", "Wait or return to the current open workspace before saving.")
-        self._before_change(); payload = self.payload(); confirmation = self.review_confirmation.isChecked()
-        self._waiting = True; self._set_enabled()
-        def done(result):
-            self.owner.state = self.project.snapshot(); self.controller.select(self.project, self.type_id, generation=self.generation, snapshot=self.owner.state)
-            self._fill_card(self.controller.snapshot()["selection"]["card"]); self.cardSaved.emit(result)
-            self.message.setText("Explicit type card saved. Related item review and final scoped completion remain separate.")
-        self.owner._run("Save explicit human type card", lambda _progress, _cancelled: self.controller.save_card(self.project, payload,
-            generation=self.generation, idempotency_key="desktop-type-card-" + uuid.uuid4().hex, reviewed_confirmed=confirmation), done)
+    def _show_history(self):
+        state = self.project.service.store.snapshot(self.project.service.run_id)
+        rows=sorted((r for r in state.get("type_card_history",{}).values() if r["local_type_id"]==self.type_id),
+                    key=lambda r:r["revision"],reverse=True)
+        box = QDialog(self)
+        box.setWindowTitle('Definition history')
+        layout = QVBoxLayout(box)
+        text = QPlainTextEdit()
+        text.setReadOnly(True)
+        text.setPlainText("\n\n".join(f"Revision {r['revision']} · {r['title']} · {r['definition_status']}\n{r['diagnostic_body']}\n{r['reason']}" for r in rows) or "No definition has been saved.")
+        layout.addWidget(text)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(box.reject)
+        layout.addWidget(buttons)
+        box.resize(520, 330)
+        box.exec()
 
-    def _directed_family_changed(self, *_args):
-        if self._loading or not self._current(): return
-        if self._directed_dirty: self.save_draft()
-        family = self.directed_family.currentData()
-        self._directed_family_id = family
-        self._directed_draft_binding = self.controller._binding(self.project, self.project.snapshot(), family, self.generation) if family else None
-        self.controller._directed.clear(); self.directed_scope.clear(); self._set_enabled()
-
-    def _inspect_directed(self):
-        value = self._directed_payload()
-        inspected = self.controller.preview_directed(self.project, value["family_id"], value["context"], generation=self.generation)
-        self._directed_draft_binding = inspected["binding"]
-        self.directed_scope.setPlainText(json.dumps(system_fields(inspected["scope"]), ensure_ascii=False, indent=2))
-        self._render_coverage(inspected["scope"]["coverage"])
-        scope = inspected["scope"]["delivery_scope"] or {}
-        derived = inspected["scope"]["derived_context"]
-        self.delivery.setText(f"Saved delivery target: {derived['delivery_target_level']} · Required verification: {derived['verification_level']} · "
-                              f"Unresolved policy: {scope.get('unresolved_policy', 'not declared in the saved scope')} · Exact Fine-required IDs: {derived['fine_required_ids']}")
-        self.direct_exception.setEnabled(inspected["scope"]["direct_exception"].get("allowed") is True)
+    def _ask_save(self, status):
+        _require(self._current() and (not self.owner._busy) and (not self.controller.invalid_reason), 'CATALOGUE_BUSY', 'Refresh the current definition before saving.')
+        payload = dict(self.payload(), definition_status=status)
+        box = QDialog(self)
+        box.setWindowTitle('Confirm definition' if status == 'reviewed' else 'Save draft definition')
+        layout = QVBoxLayout(box)
+        layout.addWidget(_heading(_name(self._row)))
+        representatives = payload['representative_ids']
+        layout.addWidget(_label(f'{len(self._members)} members · {len(representatives)} representative syllables'))
+        raw = self.project.service.store.snapshot(self.project.service.run_id)
+        prior = raw.get('type_cards', {}).get(self.type_id)
+        while prior and prior['definition_status'] != 'reviewed':
+            prior = raw.get('type_card_history', {}).get(prior.get('previous_card_id'))
+        if prior and definition_content(prior) != definition_content(payload):
+            related = {self.type_id, *prior.get('competing_type_ids', []), *payload['competing_type_ids']}
+            if self._row['parent_type_id']:
+                related.add(self._row['parent_type_id'])
+            affected = set().union(*(set(m['member_ids']) for m in raw['memberships'] if m['local_type_id'] in related))
+            layout.addWidget(_label(f"The revised definition requires a new review of {len(affected)} affected syllables."))
+        layout.addWidget(_label('Basis for this definition or revision'))
+        reason = QPlainTextEdit(self._reason)
+        reason.setObjectName('definitionRevisionBasis')
+        reason.setMaximumHeight(78)
+        layout.addWidget(reason)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        submit = buttons.addButton('Confirm reviewed definition' if status == 'reviewed' else 'Save draft definition', QDialogButtonBox.ButtonRole.AcceptRole)
+        submit.setEnabled(bool(self._reason.strip()))
+        reason.textChanged.connect(lambda:submit.setEnabled(bool(reason.toPlainText().strip())))
+        buttons.accepted.connect(box.accept)
+        buttons.rejected.connect(box.reject)
+        layout.addWidget(buttons)
+        box.resize(min(self.width(), 460), box.sizeHint().height())
+        if box.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._reason = reason.toPlainText().strip()
+        self._draft_status = status
+        self._dirty = True
+        self._before_change()
+        payload = self.payload()
+        draft = self._store.get('card:' + self.type_id)
+        type_id = self.type_id
+        self._waiting = True
         self._set_enabled()
+        def done(result):
+            self._store.discard('card:' + type_id, draft)
+            self._waiting = False
+            self.owner.state = self.project.snapshot()
+            self.select_type(type_id)
+            self.cardSaved.emit(result)
+            self.message.setText('Definition confirmed.' if status == 'reviewed' else 'Draft definition saved.')
+        request_key = "desktop-type-card-" + uuid.uuid4().hex
 
-    def _render_coverage(self, coverage):
-        self.coverage_table.setRowCount(len(coverage["families"]))
-        for index, row in enumerate(coverage["families"]):
-            for column, value in enumerate((row["family_id"], len(row["current_member_ids"]), row["review_id"] or "not prepared", row["status"], row["closed_current"])):
-                self.coverage_table.setItem(index, column, QTableWidgetItem(str(value)))
+        def submit_card(_progress, _cancelled):
+            return self.controller.save_card(self.project, payload, generation=self.generation,
+                                             idempotency_key=request_key, reviewed_confirmed=status == "reviewed")
 
-    def _restore_directed(self):
-        family = self.directed_family.currentData()
-        value = self.controller.restore_draft(self.project, family, kind="directed", generation=self.generation)["payload"]
-        self._loading = True
-        for key, field in self.directed_texts.items():
-            field.setText(", ".join(value["context"].get("observation_ids", [])) if key == "observation_ids" else
-                          value["context"].get(key, "") or "" if key in {"question", "reason", "parent_issue_id"} else value.get(key, ""))
-        self.basis.setCurrentIndex(max(0, self.basis.findData(value["context"].get("basis"))))
-        _choices(self.affected, [row["local_type_id"] for row in self.controller.view(self.project)["types"]], value["context"]["affected_type_ids"])
-        self.direct_exception.setChecked(False); self._loading = False; self._directed_dirty = True
-        self.controller._directed.clear(); self.directed_scope.clear(); self.message.setText("Directed inputs restored, not prepared. Inspect the exact current family and question again.")
+        self.owner._run("Save type definition", submit_card, done)
 
-    def _prepare(self):
-        _require(self._current() and not self.owner._busy, "CATALOGUE_BUSY", "Wait before requesting a directed round.")
-        self._before_change(); value = self._directed_payload()
-        value["page_layout"] = self.owner.review_page_layout()
-        self._waiting = True; self._set_enabled()
-        def done(result): self._pending_review_id = result["review_id"]; self.owner.state = self.project.snapshot()
-        self.owner._run("Prepare one explicitly directed human family", lambda _progress, _cancelled: self.controller.prepare_directed(self.project,
-            value.pop("family_id"), value.pop("context"), generation=self.generation, idempotency_key="desktop-directed-" + uuid.uuid4().hex, **value), done)
-
-    def _continue(self):
-        row = self.history.currentRow(); _require(row >= 0, "DIRECTED_REVIEW_SCOPE", "Select a current directed history row.")
-        rid = self.history.item(row, 0).text(); state = self.project.service.store.snapshot(self.project.service.run_id)
-        review = state.get("batch_review", {}).get("reviews", {}).get(rid)
-        _require(review and review.get("directed_issue_id") and not review.get("closed") and self.controller._active(state, review["family_id"]) is review,
-                 "DIRECTED_REVIEW_SCOPE", "Historical or closed rounds are read-only.")
-        context = {key: copy.deepcopy(review["directed_context"].get(key)) for key in ("question", "basis", "reason", "affected_type_ids", "parent_issue_id", "observation_ids")}
-        self.controller.preview_directed(self.project, review["family_id"], context, generation=self.generation)
-        self._pending_review_id = self.controller.continue_directed(self.project, review["family_id"], generation=self.generation)["review_id"]
-        self.refresh()
-
-    def _set_enabled(self):
-        if not hasattr(self, "save_card_button"): return
-        available = self._current() and not self.owner._busy and not self._waiting
-        self.save_draft_button.setEnabled(bool(self.type_id))
-        self.save_card_button.setEnabled(available and self.type_id is not None and self.controller.invalid_reason is None
-            and (self.status.currentData() != "reviewed" or self.review_confirmation.isChecked()))
-        self.prepare_button.setEnabled(available and self.directed_family.currentData() in self.controller._directed)
-        self.inspect_scope_button.setEnabled(available and self.directed_family.currentData() is not None)
-        self.continue_button.setEnabled(available)
-        self.types.setEnabled(available); self.refresh_context_button.setEnabled(available and self.type_id is not None)
-        for widget in [*self.texts.values(), *self.examples.values(), self.status, self.review_confirmation,
-                       self.directed_family, *self.directed_texts.values(), self.basis, self.affected,
-                       self.restore_card_button, self.restore_directed_button, self.members]:
-            widget.setEnabled(available)
+    def _set_enabled(self, *_args):
+        if not hasattr(self, 'save_card_button') or self._loading:
+            return
+        editing = self.tabs.currentIndex() == 0 and self.card_pages.currentWidget() is self.editor and (self.type_id is not None)
+        available = self._current() and (not self.owner._busy) and (not self._waiting)
+        self.directory_button.setVisible(editing)
+        self.more_button.setVisible(editing)
+        self.save_card_button.setVisible(editing)
+        self.types.setEnabled(available)
+        if hasattr(self, '_row') and self._row:
+            blocked = self.controller.invalid_reason is not None or self._prior_draft is not None
+            valid = available and (not blocked)
+            self.refresh_context_button.setVisible(blocked)
+            self.refresh_context_button.setText('Use current definition' if self._prior_draft else 'Refresh current members')
+            self.restore_card_button.setVisible(self._prior_draft is not None)
+            for widget in [self.name_edit, *self.texts.values(), self.representatives, self.member_combo, self.extra, self.extra_button]:
+                widget.setEnabled(valid)
+            self.add_member_button.setEnabled(valid and bool(self._members))
+            self.members_tools.setEnabled(valid and bool(self._members))
+            chosen = self.representatives.currentItem() is not None
+            self.listen_rep_button.setEnabled(valid and chosen)
+            self.remove_rep_button.setEnabled(valid and chosen)
+            self.draft_action.setEnabled(valid and bool(self.name_edit.text().strip()))
+            criteria = bool(self.texts["diagnostic_body"].toPlainText().strip())
+            fine_difference = not self._row["parent_type_id"] or bool(self.texts["main_variant_difference"].toPlainText().strip())
+            self.save_card_button.setEnabled(self.draft_action.isEnabled() and self.representatives.count() > 0
+                                             and criteria and fine_difference)
+            self.directed_button.setEnabled(valid)
+            active = self._active_directed(self._row['family_id']) if editing else None
+            self.directed_button.setText('Continue directed review…' if active else 'Start directed review…')
+        self._directed_controls(available)
 
     def refresh(self):
         if not self._current():
-            self.invalidate("Project or window changed; unsubmitted inputs are retained."); return
+            self.invalidate('Project changed. Reopen Type definitions.')
+            return
         state = self.owner.state or self.project.snapshot()
-        if not self.owner._busy: self._waiting = False
-        view = self.controller.view(self.project, state)
-        self._render_directory(view)
-        self.controller.observe_context(state, project_id=self.project.metadata["project_id"], generation=self.generation)
-        if self.controller.invalid_reason: self.message.setText(self.controller.invalid_reason)
-        if self._pending_review_id and not self.owner._busy:
-            review = state.get("batch_review", {}).get("reviews", {}).get(self._pending_review_id, {})
-            if review.get("status") == "ready":
-                rid, self._pending_review_id = self._pending_review_id, None
-                _require(not review.get("scope_stale") and not review.get("read_only"), "DIRECTED_REVIEW_SCOPE", "Prepared directed round is stale.")
-                self.reviewPrepared.emit(rid)
-                if self.on_review_selected: self.on_review_selected(rid)
-            elif review.get("status") in {"failed", "cancelled"}:
-                self.message.setText(str(system_fields(review.get("error", review["status"]))))
+        revision = state['revision']
+        if revision != self._revision:
+            self._revision = revision
+            view = self.controller.view(self.project, state)
+            self._directory_rows = view['types']
+            self._filter_directory()
+            self.controller.observe_context(state, project_id=self.project.metadata['project_id'], generation=self.generation)
+            if self.controller.invalid_reason:
+                self.message.setText(self.controller.invalid_reason)
+            self._render_directed(view)
+        self.refresh_pending_directed(state)
         self._set_enabled()
 
     def invalidate(self, reason):
-        self.controller.invalidate(reason); self.timer.stop(); self.review_confirmation.setChecked(False); self._set_enabled()
+        self.controller.invalidate(reason)
+        self.timer.stop()
+        self._set_enabled()
+        self.message.setText(reason)
 
     def stop(self):
-        if hasattr(self.owner, "_stop_review_audio"): self.owner._stop_review_audio()
-        else: self.stopRequested.emit()
+        media = getattr(self.owner, '_review_media_dialog', None)
+        if self._audition_id and media and (media.target_id == self._audition_id):
+            media.stop()
+        self._audition_id = None
 
     def reject(self):
-        try: self.save_draft()
-        except Exception as exc: self._guard(lambda: (_ for _ in ()).throw(exc)); return
-        self.review_confirmation.setChecked(False); self.stop(); super().reject()
+        try:
+            self.save_draft()
+        except Exception as exc:
+            self.owner._error(exc, operation="save definition draft")
+            return
+        self.stop()
+        super().reject()
 
     def closeEvent(self, event):
-        try: self.save_draft()
-        except Exception as exc: event.ignore(); self._guard(lambda: (_ for _ in ()).throw(exc)); return
-        self.review_confirmation.setChecked(False); self.stop(); self.timer.stop(); super().closeEvent(event)
+        try:
+            self.save_draft()
+        except Exception as exc:
+            event.ignore()
+            self.owner._error(exc, operation="save definition draft")
+            return
+        self.stop()
+        self.timer.stop()
+        super().closeEvent(event)
 
     def showEvent(self, event):
-        super().showEvent(event); self.refresh(); self.timer.start()
+        super().showEvent(event)
+        self.refresh()
+        self.timer.start()

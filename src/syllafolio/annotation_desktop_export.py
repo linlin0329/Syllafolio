@@ -2,6 +2,9 @@
 from __future__ import annotations
 from .annotation_english import system_error, system_fields, system_text
 
+from concurrent.futures import TimeoutError as FutureTimeout
+from datetime import datetime
+from pathlib import Path
 import copy
 import hashlib
 import json
@@ -11,11 +14,10 @@ import uuid
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog,
-    QFormLayout, QGridLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
-    QScrollArea, QSizePolicy, QTabWidget, QVBoxLayout, QWidget)
+    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
+    QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
 from .annotation_assistant_contracts import canonical_hash
-from .annotation_desktop_assessment import _table, _rows
 from .annotation_desktop_review_media import _checked_path
 
 CHOOSE = "__export_choose__"
@@ -63,6 +65,7 @@ class ExportController:
     def __init__(self, project):
         self.project, self.requests, self.pending = project, {}, {}
         self.base_ticket = self.ticket()
+        self.generated_job = None
 
     def ticket(self, state=None):
         state = self.project.snapshot() if state is None else state
@@ -111,6 +114,45 @@ class ExportController:
         combined = "Purpose: " + purpose + "\nReason: " + reason
         _require(len(combined.strip()) <= 4000, "EXPORT_REASON", "Combined purpose and reason must fit the service's 4000-character limit.")
         return self._execute("catalogue_export_start", {"mode": mode, "assessment_job_id": assessment_job_id, "reason": combined}, **kwargs)
+
+    def export_to(self, destination, mode, assessment_id, purpose, reason, *, ticket, confirmed,
+                  progress=None, cancelled=None):
+        """Freeze one reviewed request, then deliver the registered bytes for its exact job."""
+        from .annotation_desktop_export_files import ExporterAdapter
+        files = ExporterAdapter(self.project)
+        path = files.check_zip_destination(destination)
+        if cancelled and cancelled():
+            raise ExportError("CANCELLED", ERROR_TEXT["CANCELLED"])
+        response = self.start(mode, assessment_id, purpose, reason, ticket=ticket,
+                              confirmed=confirmed, scope_confirmed=confirmed)
+        job_id = response["record"]["job_id"]
+        if progress:
+            progress({"stage": "Generating catalogue"})
+        service = self.project.service
+        with service._lock:
+            future = service.catalogue_export.futures.get(job_id)
+        cancel_sent = False
+        while future is not None:
+            try:
+                future.result(timeout=.25)
+                break
+            except FutureTimeout:
+                if future.done():
+                    future.result()
+                    break
+                if cancelled and cancelled() and not cancel_sent:
+                    cancel_sent = True
+                    job = self.job(job_id)
+                    if job["status"] in ACTIVE:
+                        self.cancel(job_id, "Cancelled during catalogue export.", ticket=ticket)
+        job = self.job(job_id)
+        if job["status"] != "completed":
+            error = job.get("error") or {}
+            raise ExportError(error.get("code", "EXPORT_NOT_READY"),
+                              error.get("message") or "The catalogue could not be generated.")
+        # Keep this version available when saving fails, including a destination race.
+        self.generated_job = job_id
+        return files.save_zip(job_id, path, cancelled=cancelled, progress=progress)
 
     def cancel(self, job_id, reason, **kwargs):
         _require(isinstance(job_id, str) and bool(job_id), "EXPORT_NOT_FOUND", "Select the exact persisted delivery job.")
@@ -178,324 +220,624 @@ class ExportDraftStore:
             finally: temporary.unlink(missing_ok=True)
 
 
+
+def _label(text="", *, heading=False):
+    widget = QLabel(text)
+    widget.setTextFormat(Qt.TextFormat.PlainText)
+    widget.setWordWrap(True)
+    if heading:
+        font = widget.font()
+        font.setBold(True)
+        widget.setFont(font)
+    return widget
+
+
+def _date(value):
+    try:
+        date = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return date.astimezone().strftime("%Y-%m-%d %H:%M %z")
+    except (AttributeError, TypeError, ValueError):
+        return str(value or "")
+
+
+def _report_name(option):
+    status = {"completed": "Scored", "not_estimable": "Support report"}.get(option["status"], option["status"].capitalize())
+    match = "Historical" if option["stale_for_current"] else "Current"
+    return f"{_date(option['created_at'])} · {status} · {match}"
+
+
+def _short_id(job_id):
+    return job_id.rsplit("-", 1)[-1][:8]
+
+
+def _inventory_details(inventory):
+    sections = []
+    for title, field in (("Declared or provisional scope", "scope_item_ids"),
+                         ("Outside this scope, included in the full index", "outside_scope_item_ids"),
+                         ("Examples with audio and spectrograms", "example_item_ids"),
+                         ("Examples outside this scope", "outside_scope_example_ids")):
+        ids = inventory[field]
+        sections.append(f"{title} ({len(ids)})\n" + (", ".join(ids) or "None"))
+    return "\n\n".join(sections)
+
+
+def _inventory_summary(inventory):
+    total = len(inventory["all_item_ids"])
+    outside = len(inventory["outside_scope_item_ids"])
+    examples = len(inventory["example_item_ids"])
+    external = len(inventory["outside_scope_example_ids"])
+    return (f"The full index and audit cover all {total} syllables ({outside} outside this scope). "
+            f"Example media: {examples} distinct syllables, including {external} outside the scope.")
+
+
 class ExportDialog(QDialog):
     changed = Signal(object)
     saved = Signal(object)
     previewOpened = Signal(object)
-    assessmentRequested = Signal()
+    assessmentRequested = Signal(object)
     scopeRequested = Signal()
 
     def __init__(self, owner):
         super().__init__(owner)
         self.owner, self.project = owner, owner.project
         self.generation = owner._close_coordinator.generation
-        self.controller, self.store = ExportController(self.project), ExportDraftStore(self.project)
-        self._view, self._selected_job, self._loading, self._dirty = None, None, False, False
-        self._waiting, self._invalid, self._epoch, self._footer_columns = False, None, 0, None
-        self.setWindowTitle("Scoped catalogue delivery")
-        screen = owner.screen(); area = screen.availableGeometry() if screen else None
-        self.resize(min(1080, area.width() - 32) if area else 1080, min(780, area.height() - 64) if area else 780)
-        layout = QVBoxLayout(self)
-        self.status = QLabel(); self.status.setWordWrap(True); layout.addWidget(self.status)
-        self.tabs = QTabWidget(); self.tabs.setUsesScrollButtons(True); self.tabs.setElideMode(Qt.TextElideMode.ElideRight)
-        self.tabs.tabBar().setMinimumWidth(0); layout.addWidget(self.tabs, 1)
-        self._build_request(); self._build_history()
-        self.message = QLabel("A draft may retain unfinished entries. Scoped complete delivery is an engineering completeness claim, not annotation accuracy or biological truth.")
-        self.message.setWordWrap(True); layout.addWidget(self.message)
-        self.footer = QGridLayout(); layout.addLayout(self.footer)
-        self.save_draft_button = QPushButton("Save form draft"); self.save_draft_button.clicked.connect(lambda: self._guard(self.save_draft))
-        self.restore_draft_button = QPushButton("Restore form draft"); self.restore_draft_button.clicked.connect(lambda: self._guard(self.restore_draft))
-        self.refresh_button = QPushButton("Refresh"); self.refresh_button.clicked.connect(lambda: self._guard(lambda: self.refresh(force=True)))
-        self.close_button = QPushButton("Close"); self.close_button.clicked.connect(self.reject)
-        self.footer_buttons = (self.save_draft_button, self.restore_draft_button, self.refresh_button, self.close_button)
-        for button in self.footer_buttons:
-            button.setMinimumWidth(0); button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        self._layout_footer()
-        self.timer = QTimer(self); self.timer.setInterval(350); self.timer.timeout.connect(lambda: self._guard(self.refresh))
-        self.finished.connect(lambda _result: self.stop())
-        if hasattr(getattr(owner, "operationFailed", None), "connect"): owner.operationFailed.connect(self._operation_failed)
+        self.controller = ExportController(self.project)
+        self.store = ExportDraftStore(self.project)
+        self._view = self._selected_job = self._retry_job = self._saved = self._invalid = None
+        self._historic_inventory_id = self._historic_inventory = None
+        self._dirty = self._loading = self._waiting = False
+        self._epoch = 0
+        self.setWindowTitle("Export catalogue")
+        area = self.screen().availableGeometry()
+        self.resize(min(800, area.width()-32), min(690, area.height()-60))
+        outer = QVBoxLayout(self)
+        self.pages = QStackedWidget()
+        outer.addWidget(self.pages, 1)
+        self._build_form()
+        self._build_history()
+        self.message = _label()
+        outer.addWidget(self.message)
+        buttons = QHBoxLayout()
+        self.history_button = QPushButton("Previous exports…")
+        self.history_button.clicked.connect(self._toggle_history)
+        buttons.addWidget(self.history_button)
+        buttons.addStretch()
+        self.start_button = QPushButton("Export catalogue…")
+        self.start_button.setObjectName("exportCatalogue")
+        self.start_button.clicked.connect(lambda: self._guard(self.start_export))
+        buttons.addWidget(self.start_button)
+        self.close_button = QPushButton("Close")
+        self.close_button.clicked.connect(self.reject)
+        buttons.addWidget(self.close_button)
+        outer.addLayout(buttons)
+        self.timer = QTimer(self)
+        self.timer.setInterval(350)
+        self.timer.timeout.connect(lambda: self._guard(self.refresh))
+        self.finished.connect(lambda _: self.timer.stop())
+        self.owner.operationFailed.connect(self._operation_failed)
         self.refresh(force=True)
+        self._restore_form()
 
-    def _page(self, title):
-        page = QWidget(); layout = QVBoxLayout(page)
-        scroll = QScrollArea(); scroll.setWidgetResizable(True)
-        body = QWidget(); inner = QVBoxLayout(body); scroll.setWidget(body)
-        layout.addWidget(scroll, 1); self.tabs.addTab(page, title)
-        return layout, inner
+    def _page(self):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        scroll.setWidget(body)
+        self.pages.addWidget(scroll)
+        return scroll, layout
 
-    def _build_request(self):
-        layout, inner = self._page("Scope & request")
-        self.scope_text = QLabel(); self.scope_text.setWordWrap(True); inner.addWidget(self.scope_text)
-        self.counts = _table(["Current scope / task count", "Value"]); self.counts.setMinimumHeight(150); inner.addWidget(self.counts)
-        self.blockers = QPlainTextEdit(); self.blockers.setReadOnly(True); self.blockers.setMinimumHeight(120); inner.addWidget(self.blockers)
-        self.scope_button = QPushButton("Open scope and completion")
-        self.scope_button.clicked.connect(lambda: self._guard(lambda: self._request_workspace(self.scopeRequested))); inner.addWidget(self.scope_button)
-        form = QFormLayout(); inner.addLayout(form)
-        self.mode = QComboBox(); self.mode.addItem("Choose delivery mode explicitly…", CHOOSE)
-        self.mode.addItem("Draft: retain unfinished entries and limits", "draft")
-        self.mode.addItem("Complete: only the declared current scope", "complete")
-        self.mode.currentIndexChanged.connect(self._input_changed); form.addRow("Mode", self.mode)
-        self.assessment = QComboBox(); self.assessment.currentIndexChanged.connect(self._input_changed)
-        self.assessment.currentIndexChanged.connect(self._assessment_choice_changed)
-        form.addRow("Assessment report", self.assessment)
-        self.assessments = _table(["Assessment start ID", "Created at", "Status", "Eligible for complete", "Current / historical reasons"])
-        self.assessments.itemSelectionChanged.connect(self._assessment_row_selected)
-        self.assessments.setMinimumHeight(140); inner.addWidget(self.assessments)
-        self.assessment_button = QPushButton("Open source support and reports")
-        self.assessment_button.clicked.connect(lambda: self._guard(lambda: self._request_workspace(self.assessmentRequested))); inner.addWidget(self.assessment_button)
-        self.purpose, self.reason = QPlainTextEdit(), QPlainTextEdit()
-        for field in (self.purpose, self.reason): field.setMaximumHeight(80); field.textChanged.connect(self._input_changed)
-        form.addRow("Actual delivery purpose", self.purpose); form.addRow("Actual reason / basis", self.reason)
-        note = QLabel("Purpose and reason are saved verbatim as two labelled sections in the existing service reason field (combined maximum 4000 characters). This form does not edit the saved delivery scope. Packages contain chosen examples, not every parent recording or a full project backup.")
-        note.setWordWrap(True); inner.addWidget(note)
-        self.scope_confirm = QCheckBox("I reviewed the displayed scope, counts, unreviewed, unresolved and excluded entries")
-        self.confirmation = QCheckBox("I explicitly request this delivery mode, assessment report, purpose and stated limitations")
-        self.scope_confirm.toggled.connect(self._buttons); self.confirmation.toggled.connect(self._buttons)
-        inner.addWidget(self.scope_confirm); inner.addWidget(self.confirmation)
-        self.start_button = QPushButton("Generate delivery")
-        self.start_button.clicked.connect(lambda: self._guard(self.start_export)); layout.addWidget(self.start_button)
+    def _button(self, text, callback):
+        button = QPushButton(text)
+        button.setAutoDefault(False)
+        button.clicked.connect(lambda: self._guard(callback))
+        return button
+
+    def _build_form(self):
+        self.form_page, layout = self._page()
+        top = QHBoxLayout()
+        top.addWidget(_label("Catalogue contents", heading=True))
+        top.addStretch()
+        self.scope_button = self._button("Final checks…", lambda: self._request_workspace(self.scopeRequested))
+        top.addWidget(self.scope_button)
+        layout.addLayout(top)
+        self.scope_text = _label()
+        self.counts_text = _label()
+        self.inventory_text = _label()
+        for label in (self.scope_text, self.counts_text, self.inventory_text):
+            layout.addWidget(label)
+        self.members_button = QPushButton("Show included syllables…")
+        self.members_button.setCheckable(True)
+        self.members_button.toggled.connect(self._inventory_toggled)
+        layout.addWidget(self.members_button, 0, Qt.AlignmentFlag.AlignLeft)
+        self.inventory_detail = QPlainTextEdit()
+        self.inventory_detail.setReadOnly(True)
+        self.inventory_detail.setMaximumHeight(130)
+        self.inventory_detail.hide()
+        layout.addWidget(self.inventory_detail)
+        layout.addSpacing(6)
+        layout.addWidget(_label("Export options", heading=True))
+        form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        self.mode = QComboBox()
+        self.mode.setObjectName("catalogueMode")
+        self.mode.addItem("Choose a mode…", CHOOSE)
+        self.mode.addItem("Draft catalogue", "draft")
+        self.mode.addItem("Complete catalogue", "complete")
+        self.assessment = QComboBox()
+        self.assessment.setObjectName("catalogueAssessment")
+        self.assessment.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.assessment_button = self._button("Internal assessment…", self._request_assessment)
+        report_row = QHBoxLayout()
+        report_row.addWidget(self.assessment, 1)
+        report_row.addWidget(self.assessment_button)
+        form.addRow("Mode", self.mode)
+        form.addRow("Assessment", report_row)
+        self.purpose = QLineEdit()
+        self.purpose.setObjectName("cataloguePurpose")
+        self.reason = QLineEdit()
+        self.reason.setObjectName("catalogueReason")
+        self.reason.setPlaceholderText("Why are you exporting this version?")
+        form.addRow("Purpose", self.purpose)
+        form.addRow("Export reason", self.reason)
+        layout.addLayout(form)
+        self.hint = _label()
+        layout.addWidget(self.hint)
+        self.confirmation = QCheckBox("I confirm the scope, included data, export mode and assessment shown above.")
+        self.confirmation.setObjectName("catalogueConfirmation")
+        layout.addWidget(self.confirmation)
+        self.mode.currentIndexChanged.connect(self._input_changed)
+        self.assessment.currentIndexChanged.connect(self._input_changed)
+        self.purpose.textChanged.connect(self._input_changed)
+        self.reason.textChanged.connect(self._input_changed)
+        self.confirmation.toggled.connect(self._buttons)
+        layout.addStretch()
+        self.result_box = QWidget()
+        self.retry_summary = _label()
+        self.retry_summary.hide()
+        layout.addWidget(self.retry_summary)
+        row = QHBoxLayout(self.result_box)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.retry_button = self._button("Save generated ZIP…", self.retry_save)
+        self.retry_button.setObjectName("retryCatalogueSave")
+        self.new_button = self._button("Start a different export", self._new_request)
+        self.preview_saved_button = self._button("Open report", self._preview_saved)
+        self.folder_button = self._button("Open folder", self._open_folder)
+        for button in (self.retry_button, self.new_button, self.preview_saved_button, self.folder_button):
+            row.addWidget(button)
+        row.addStretch()
+        self.result_box.hide()
+        layout.addWidget(self.result_box)
 
     def _build_history(self):
-        layout, inner = self._page("Versions & files")
-        self.jobs = _table(["Delivery ID (start order)", "Created at", "Mode", "Status", "Assessment selected", "Applicability / error"])
-        self.jobs.setMinimumHeight(160); self.jobs.itemSelectionChanged.connect(self._job_selected); inner.addWidget(self.jobs)
-        self.selected_status = QLabel(); self.selected_status.setWordWrap(True); inner.addWidget(self.selected_status)
-        self.details = QPlainTextEdit(); self.details.setReadOnly(True); self.details.setMinimumHeight(180); inner.addWidget(self.details)
-        self.cancel_reason = QLineEdit(); self.cancel_reason.setPlaceholderText("Actual reason to cancel the selected active delivery")
-        self.cancel_reason.textChanged.connect(self._changed); inner.addWidget(self.cancel_reason)
-        self.cancel_button = QPushButton("Cancel selected delivery")
-        self.cancel_button.clicked.connect(lambda: self._guard(self.cancel_selected)); layout.addWidget(self.cancel_button)
-        self.save_package_button = QPushButton("Save ZIP + manifest…")
-        self.save_package_button.setToolTip("Save both verified original files atomically to a new output folder.")
-        self.save_package_button.clicked.connect(lambda: self._guard(self.save_package)); layout.addWidget(self.save_package_button)
-        self.preview_button = QPushButton("Open offline HTML")
-        self.preview_button.setToolTip("Verify and open this package's local HTML, styles and chosen example audio.")
-        self.preview_button.clicked.connect(lambda: self._guard(self.preview_selected)); layout.addWidget(self.preview_button)
+        self.history_page, layout = self._page()
+        layout.addWidget(_label("Previous exports", heading=True))
+        self.jobs = QComboBox()
+        self.jobs.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.jobs.currentIndexChanged.connect(self._history_selected)
+        layout.addWidget(self.jobs)
+        self.selected_status = _label()
+        layout.addWidget(self.selected_status)
+        self.history_members_button = QPushButton("Show included syllables…")
+        self.history_members_button.setCheckable(True)
+        layout.addWidget(self.history_members_button, 0, Qt.AlignmentFlag.AlignLeft)
+        self.history_detail = QPlainTextEdit()
+        self.history_detail.setReadOnly(True)
+        self.history_detail.setMaximumHeight(160)
+        self.history_detail.hide()
+        self.history_members_button.toggled.connect(self.history_detail.setVisible)
+        layout.addWidget(self.history_detail)
+        row = QHBoxLayout()
+        self.save_package_button = self._button("Save this ZIP…", self.save_package)
+        self.preview_button = self._button("Open report", self.preview_selected)
+        row.addWidget(self.save_package_button)
+        row.addWidget(self.preview_button)
+        row.addStretch()
+        layout.addLayout(row)
+        self.cancel_reason = QLineEdit()
+        self.cancel_reason.setPlaceholderText("Reason for cancelling this export")
+        self.cancel_reason.textChanged.connect(self._input_changed)
+        self.cancel_button = self._button("Cancel active export", self.cancel_selected)
+        layout.addWidget(self.cancel_reason)
+        layout.addWidget(self.cancel_button, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addStretch()
+
+    def _inventory_toggled(self, checked):
+        self.inventory_detail.setVisible(checked)
+        self.members_button.setText("Hide included syllables" if checked else "Show included syllables…")
+        if checked and self._view:
+            self._render_inventory()
+
+    def _render_inventory(self):
+        inventory = self._view.get("inventory") or {}
+        counts = self._view.get("counts", {})
+        scope = self._view.get("scope") or {}
+        n, total = counts.get("n_scope", 0), counts.get("n_task", 0)
+        level = {"family": "Family level", "leaf": "Fine-form level"}.get(scope.get("target_level"), "")
+        self.scope_text.setText(
+            f"Declared scope: {n} of {total} syllables · {level}" if scope.get("declared") else
+            f"No declared scope. A draft covers all {total} task syllables.")
+        self.counts_text.setText("   ·   ".join(f"{title}: {counts.get(field, 0)}" for field, title in
+            (("assigned", "Assigned"), ("unresolved", "Family unresolved"), ("excluded", "Excluded"), ("unreviewed", "Unreviewed"))))
+        self.inventory_text.setText(_inventory_summary(inventory) if inventory else "Package contents unavailable.")
+        if self.members_button.isChecked() and inventory:
+            self.inventory_detail.setPlainText(_inventory_details(inventory))
 
     def is_current(self):
         return (self.owner.project is self.project and self.owner._close_coordinator.generation == self.generation
-                and self.owner._close_coordinator.state == "open" and self._invalid is None)
+                and self._invalid is None)
 
     def _guard(self, function):
-        try: return function()
+        try:
+            return function()
         except Exception as exc:
-            text = ERROR_TEXT.get(getattr(exc, "code", None), system_error(exc))
-            self.message.setText(str(getattr(exc, "code", type(exc).__name__)) + ": " + text)
-            self.owner._error(exc, operation="catalogue delivery")
+            self.message.setText(system_error(exc))
+            self.owner._error(exc, operation="catalogue export")
 
-    def _operation_failed(self, message):
-        if self._waiting and self.is_current():
+    def _operation_failed(self, error):
+        if self._waiting:
             self._waiting = False
-            self.message.setText(system_text(message))
+            generated = self.controller.generated_job
+            if generated:
+                self._retry_job = generated
+                self._selected_job = generated
+                inventory = self._adapter().frozen_inventory(generated)
+                self.retry_summary.setText(
+                    f"Generated version {_short_id(generated)}: {len(inventory['scope_item_ids'])} syllables in scope. "
+                    + _inventory_summary(inventory))
+                self.message.setText(f"Version {_short_id(generated)} was generated. Saving failed: {str(error)[:200]} "
+                                     "Choose another location to save the same ZIP.")
+            else:
+                self.message.setText(str(error)[:260])
+            self.controller.generated_job = None
             self._buttons()
 
-    def _changed(self, *_args):
-        if not self._loading: self._dirty = True
-        self._buttons()
-
     def _input_changed(self, *_args):
-        if not self._loading:
-            self.confirmation.setChecked(False); self._dirty = True
+        if self._loading:
+            return
+        self._dirty = True
+        self.confirmation.setChecked(False)
         self._buttons()
 
     def _selected(self):
-        return next((job for job in (self._view or {}).get("jobs", []) if job["job_id"] == self._selected_job), None)
+        return next((row for row in (self._view or {}).get("jobs", []) if row["job_id"] == self._selected_job), None)
 
-    def _assessment_row_selected(self):
-        if self._loading: return
-        row = self.assessments.currentRow()
-        if row >= 0 and self.assessments.item(row, 0):
-            self.assessment.setCurrentIndex(max(0, self.assessment.findData(self.assessments.item(row, 0).text())))
-
-    def _assessment_choice_changed(self, *_args):
-        if self._loading or not hasattr(self, "assessments"): return
-        selected = self.assessment.currentData(); self._loading = True
-        try:
-            row = next((i for i in range(self.assessments.rowCount()) if self.assessments.item(i, 0).text() == selected), None)
-            if row is None:
-                self.assessments.clearSelection(); self.assessments.setCurrentCell(-1, -1)
-            else: self.assessments.selectRow(row)
-        finally: self._loading = False
-
-    def _job_selected(self):
-        if self._loading: return
-        row = self.jobs.currentRow()
-        self._selected_job = self.jobs.item(row, 0).text() if row >= 0 and self.jobs.item(row, 0) else None
-        self._dirty = True; self._render_selected(); self._buttons()
+    def _option(self):
+        selected = self.assessment.currentData()
+        return next((row for row in (self._view or {}).get("assessment_options", [])
+                     if row["job_id"] == selected), None)
 
     def _buttons(self, *_args):
-        if not hasattr(self, "preview_button"): return
+        if not self._view or self._loading:
+            return
         available = self.is_current() and not self.owner._busy and not self._waiting
-        self.tabs.setEnabled(available)
-        if hasattr(self, "save_draft_button"):
-            self.save_draft_button.setEnabled(available); self.restore_draft_button.setEnabled(available)
-        mode, assessment = self.mode.currentData(), self.assessment.currentData()
-        option = next((row for row in (self._view or {}).get("assessment_options", []) if row["job_id"] == assessment), None)
-        eligible = ((mode == "draft" and bool((self._view or {}).get("can_export_draft"))) or
-                    (mode == "complete" and bool((self._view or {}).get("can_export_complete")) and option is not None and option["eligible_for_complete"]))
-        self.start_button.setEnabled(available and eligible and assessment != CHOOSE and self.scope_confirm.isChecked()
-            and self.confirmation.isChecked() and bool(self.purpose.toPlainText().strip()) and bool(self.reason.toPlainText().strip()))
+        self.pages.setEnabled(available)
+        self.history_button.setEnabled(available)
+        mode = self.mode.currentData()
+        option = self._option()
+        view = self._view
+        if mode == "draft":
+            eligible = view.get("can_export_draft", False) and (option is not None or self.assessment.currentData() is None)
+            message = ("A draft retains unfinished items and records their status." if not option else
+                       "The draft will label the selected assessment as historical." if option.get("stale_for_current") else
+                       "The draft will include the selected assessment status.")
+            title = "Export draft catalogue…"
+        elif mode == "complete":
+            eligible = view.get("can_export_complete", False) and option and option.get("eligible_for_complete")
+            messages = []
+            if not view.get("human_completion_current"):
+                messages.append("Complete Final checks for the current scope and definitions.")
+            if not option or not option["eligible_for_complete"]:
+                messages.append("Choose a matching scored or support report." if
+                    any(r["eligible_for_complete"] for r in view.get("assessment_options", [])) else
+                    "Run an internal assessment for the current scope, labels and sources.")
+            message = " ".join(messages) or "The selected report matches the confirmed scope."
+            title = "Export complete catalogue…"
+        else:
+            eligible = False
+            title = "Export catalogue…"
+            message = "Choose Draft to share work in progress, or Complete to deliver the confirmed scope."
+        if view.get("current_job_id"):
+            message = "An export is in progress."
+        self.hint.setText(message)
+        self.start_button.setText(title)
+        on_form = self.pages.currentWidget() is self.form_page
+        self.start_button.setVisible(on_form and not self._retry_job)
+        self.start_button.setEnabled(bool(available and view.get("inventory") and eligible and self.confirmation.isChecked()
+                                         and self.purpose.text().strip() and self.reason.text().strip()))
+        self.assessment_button.setText("View assessment…" if option else "Internal assessment…")
+        self.result_box.setVisible(bool(self._retry_job or self._saved))
+        self.retry_summary.setVisible(bool(self._retry_job))
+        self.retry_button.setVisible(bool(self._retry_job))
+        self.new_button.setVisible(bool(self._retry_job))
+        self.preview_saved_button.setVisible(bool(self._saved) and not self._retry_job)
+        self.folder_button.setVisible(bool(self._saved) and not self._retry_job)
+        for field in (self.mode, self.assessment, self.purpose, self.reason, self.confirmation):
+            field.setEnabled(self._retry_job is None)
         job = self._selected()
-        self.cancel_button.setEnabled(available and job is not None and job["status"] in ACTIVE
-            and not job.get("cancel_requested") and bool(self.cancel_reason.text().strip()))
-        published = available and job is not None and job["status"] == "completed"
-        self.save_package_button.setEnabled(published); self.preview_button.setEnabled(published)
+        complete = bool(job and job["status"] == "completed")
+        active = bool(job and job["status"] in ACTIVE)
+        self.save_package_button.setEnabled(available and complete)
+        self.preview_button.setEnabled(available and complete)
+        self.cancel_reason.setVisible(active)
+        self.cancel_button.setVisible(active)
+        self.cancel_button.setEnabled(bool(available and active and not job.get("cancel_requested") and self.cancel_reason.text().strip()))
+
+    def select_assessment(self, job_id):
+        self.refresh(force=True)
+        index = self.assessment.findData(job_id)
+        _require(index >= 0 and job_id not in (None, CHOOSE), "ASSESSMENT_NOT_FOUND",
+                 "The selected assessment is unavailable in the current project.")
+        self._new_request()
+        self.pages.setCurrentWidget(self.form_page)
+        self.history_button.setText("Previous exports…")
+        self.assessment.setCurrentIndex(index)
+        option = self._option()
+        if self.mode.currentData() == CHOOSE and option and option["eligible_for_complete"]:
+            self.mode.setCurrentIndex(self.mode.findData("complete"))
+        self.confirmation.setChecked(False)
+        self._buttons()
+
+    def _toggle_history(self):
+        history = self.pages.currentWidget() is self.form_page
+        self.pages.setCurrentWidget(self.history_page if history else self.form_page)
+        self.history_button.setText("Back to export" if history else "Previous exports…")
+        if history:
+            self._render_history()
+        self._buttons()
+
+    def _history_selected(self, *_args):
+        if not self._loading:
+            self._selected_job = self.jobs.currentData()
+            self._render_history()
+            self._buttons()
+
+    def _render_history(self):
+        job = self._selected()
+        if self.pages.currentWidget() is not self.history_page:
+            return
+        complete = bool(job and job["status"] == "completed")
+        self.history_members_button.setVisible(complete)
+        self.history_detail.setVisible(complete and self.history_members_button.isChecked())
+        if not job:
+            self.selected_status.setText("No previous export.")
+            return
+        info = [f"Version {job['job_id']}", "Historical version" if job.get("stale_for_current") else "Matches current project data",
+                "Assessment: " + (job.get("assessment_job_id") or "None")]
+        if complete:
+            if self._historic_inventory_id != job["job_id"]:
+                self._historic_inventory = self._adapter().frozen_inventory(job["job_id"])
+                self._historic_inventory_id = job["job_id"]
+                self.history_detail.setPlainText(_inventory_details(self._historic_inventory))
+            info.append(f"Frozen delivery scope: {len(self._historic_inventory['scope_item_ids'])} syllables. "
+                        + _inventory_summary(self._historic_inventory))
+        if job.get("error"):
+            info.append(system_error(job["error"]))
+        self.selected_status.setText("\n".join(info))
 
     def refresh(self, force=False):
-        if not self.is_current(): self.invalidate("Project changed or is closing. Reopen catalogue delivery and explicitly review restored input."); return
-        if self.owner._busy and not force: self._buttons(); return
-        state = self.owner.state if getattr(self.owner, "state", None) is not None else self.project.snapshot()
-        old = self._view; self._view = self.controller.view(state); self.controller.rebase(state)
-        if old is None or old["revision"] != self._view["revision"] or old.get("current_fingerprint") != self._view.get("current_fingerprint"):
-            self.scope_confirm.setChecked(False); self.confirmation.setChecked(False)
-        scope, counts = self._view.get("scope", {}), self._view.get("counts", {})
-        self.status.setText(f"Current scope completion: {self._view.get('completion_id') or 'not confirmed'} · Current delivery jobs: {len(self._view.get('jobs', []))}\nDraft and scoped complete delivery remain distinct; only completed jobs offer files.")
-        self.scope_text.setText(("Saved delivery scope: " + str(scope.get("scope_id")) + " · target " + str(scope.get("target_level")) + " · purpose: " + str(scope.get("purpose"))
-            if scope.get("declared") else "No delivery scope is declared. A draft uses the service's provisional all-task scope; this is not human scoped completion.")
-            + f"\nEffective scope {len(scope.get('scope_ids', []))}/{scope.get('total_task_items', 0)} members. Outside-scope entries remain separately identified in the audit.")
-        self.blockers.setPlainText(json.dumps(_display({"complete_delivery_blockers": self._view.get("blocking_reasons", []),
-            "human_completion_missing": self._view.get("completion_missing", []),
-            "note": "Drafts retain missing entries. Complete delivery requires current human completion and your explicit eligible assessment report; not-estimable reports retain limitations."}), ensure_ascii=False, indent=2))
-        self._loading = True; _rows(self.counts, list(counts.items()))
-        choice = self.assessment.currentData() if self.assessment.count() else CHOOSE
-        self.assessment.clear(); self.assessment.addItem("Choose an assessment report…", CHOOSE)
-        self.assessment.addItem("No assessment report (draft only)", None)
-        options = self._view.get("assessment_options", [])
-        for row in options:
-            self.assessment.addItem(row["job_id"] + " · " + row["status"] + (" · historical / stale" if row["stale_for_current"] else " · current"), row["job_id"])
-        self.assessment.setCurrentIndex(max(0, self.assessment.findData(choice)))
-        _rows(self.assessments, [(row["job_id"], row["created_at"], row["status"], row["eligible_for_complete"],
-            ", ".join(row.get("stale_reasons", [])) if row["stale_for_current"] else "Current complete report" if row["eligible_for_complete"] else "No complete assessment report") for row in options])
-        jobs = self._view.get("jobs", [])
-        if old is None: self._selected_job = self._view.get("latest_job_id")
-        _rows(self.jobs, [(row["job_id"], row["created_at"], row.get("delivery_mode") or "Not recorded", row["status"] + (" / cancellation requested" if row.get("cancel_requested") else ""),
-            row.get("assessment_job_id"), ("Historical / stale: " + ", ".join(row.get("stale_reasons", [])) if row.get("stale_for_current") else "Current frozen version")
-            + (" · " + json.dumps(_display(row["error"]), ensure_ascii=False) if row.get("error") else "")) for row in jobs])
-        for i, row in enumerate(jobs):
-            if row["job_id"] == self._selected_job: self.jobs.selectRow(i)
-        self._loading = False; self._assessment_choice_changed(); self._render_selected(); self._buttons()
+        if not self.is_current():
+            self.invalidate("Project changed. Open Export catalogue for the current project.")
+            return
+        if self.owner._busy and not force:
+            self._buttons()
+            return
+        state = self.owner.state if self.owner.state is not None else self.project.snapshot()
+        if not force and self._view and self._view["revision"] == state["revision"]:
+            self._buttons()
+            return
+        old = self._view
+        self._view = self.controller.view(state)
+        self.controller.rebase(state)
+        self._loading = True
+        try:
+            self._render_inventory()
+            options = self._view.get("assessment_options", [])
+            previous = self.assessment.currentData()
+            self.assessment.clear()
+            self.assessment.addItem("Choose a report…", CHOOSE)
+            self.assessment.addItem("No assessment report (draft only)", None)
+            for option in options:
+                self.assessment.addItem(_report_name(option) + " · " + _short_id(option["job_id"]), option["job_id"])
+            if old is None:
+                eligible = [o for o in options if o["eligible_for_complete"]]
+                previous = eligible[0]["job_id"] if len(eligible) == 1 else CHOOSE
+            idx = self.assessment.findData(previous)
+            self.assessment.setCurrentIndex(max(0, idx))
+            prior_purpose = ((old or {}).get("declared_scope") or {}).get("purpose", "")
+            if not self.purpose.text().strip() or self.purpose.text() == prior_purpose:
+                self.purpose.setText((self._view.get("declared_scope") or {}).get("purpose", ""))
+            if old is None or old["ticket"] != self._view["ticket"]:
+                self.confirmation.setChecked(False)
+            self.jobs.clear()
+            for row in reversed(self._view.get("jobs", [])):
+                label = f"{_date(row['created_at'])} · {(row['delivery_mode'] or 'Export').capitalize()} · {row['status']} · {_short_id(row['job_id'])}"
+                self.jobs.addItem(label, row["job_id"])
+            self.jobs.setCurrentIndex(max(0, self.jobs.findData(self._selected_job)))
+            self._selected_job = self.jobs.currentData()
+            self._render_history()
+        finally:
+            self._loading = False
+        self._buttons()
 
-    def _render_selected(self):
-        job = self._selected()
-        if job is None:
-            self.selected_status.setText("Select a persisted delivery start. No older success is substituted.")
-            self.details.setPlainText("No delivery selected."); return
-        self.selected_status.setText(job["job_id"] + " · " + (job.get("delivery_mode") or "Delivery mode not recorded") + " · " + job["status"] + " · "
-            + ("Historical / stale: " + ", ".join(job.get("stale_reasons", [])) if job.get("stale_for_current") else "Current frozen version")
-            + "\nProgress: " + json.dumps(_display(job.get("progress", {})), ensure_ascii=False)
-            + ("\nNo complete package for this run. Older completed versions remain separately selectable history." if job["status"] != "completed" else
-               "\nSave verifies registered ZIP and manifest. Offline preview verifies and extracts this same published version; it does not use the HTTP report URL."))
-        self.details.setPlainText(json.dumps(_display({"selected_delivery": job,
-            "interpretation": "The selected frozen version is historical if current scope, evidence, source or definitions changed. A successful draft is still a draft. Chosen examples are not a full source-data or project backup.",
-            "scientific_validity_certified": False}), ensure_ascii=False, indent=2))
+    def _new_request(self):
+        self._saved = self._retry_job = None
+        self.confirmation.setChecked(False)
+        self.message.clear()
+        self._buttons()
 
-    def _run(self, label, function, *, result_kind="command"):
-        _require(self.is_current() and not self.owner._busy and not self._waiting, "EXPORT_CONTEXT_CHANGED", "Wait for the current open owner before another delivery action.")
-        epoch = self._epoch; self._waiting = True; self._buttons()
-        def done(result):
-            if not self.is_current() or epoch != self._epoch: return
-            self._waiting = False; self.owner.state = self.project.snapshot()
-            if result_kind == "command" and (result.get("record") or {}).get("job_id"):
-                self._selected_job = result["record"]["job_id"]
-            self.refresh(force=True); self.scope_confirm.setChecked(False); self.confirmation.setChecked(False)
-            if result_kind == "preview":
-                opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(result["html_path"])))
-                _require(opened, "EXPORT_PREVIEW_OPEN", "Verified offline files are ready, but the desktop could not open the HTML application.")
-                self.previewOpened.emit(result); self.message.setText("Opened the verified offline package version and its local examples.")
-            elif result_kind == "save":
-                self.saved.emit(result); self.message.setText("ZIP and manifest saved together to the new verified output folder.")
-            else:
-                self.changed.emit(result); self.message.setText("Original exact request replayed; no duplicate delivery was started." if result.get("replayed") else
-                    "Shared service receipt saved. Queued or running jobs do not yet offer a complete package.")
-        try: self.owner._run(label, function, done)
-        except Exception: self._waiting = False; self._buttons(); raise
+    def _pick_path(self, suggested):
+        path, _ = QFileDialog.getSaveFileName(self, "Save catalogue ZIP to a new file", suggested + ".zip", "ZIP archive (*.zip)")
+        return path
+
+    def _run(self, label, worker, done):
+        _require(self.is_current() and not self.owner._busy and not self._waiting,
+                 "EXPORT_CONTEXT_CHANGED", "Wait for the current project operation.")
+        epoch = self._epoch
+        self._waiting = True
+        self._buttons()
+        def finish(result):
+            if not self.is_current() or epoch != self._epoch:
+                return
+            self._waiting = False
+            self.controller.generated_job = None
+            self.owner.state = self.project.snapshot()
+            self.refresh(force=True)
+            done(result)
+            self._buttons()
+        try:
+            self.owner._run(label, worker, finish)
+        except Exception:
+            self._waiting = False
+            self._buttons()
+            raise
+
+    def _saved_zip(self, result):
+        self._saved = result
+        self._retry_job = None
+        self._selected_job = result["job_id"]
+        self.confirmation.setChecked(False)
+        self.message.setText("Saved " + result["zip_path"])
+        self.saved.emit(result)
+        self.changed.emit(result)
 
     def start_export(self):
-        mode, selected = self.mode.currentData(), self.assessment.currentData()
-        _require(selected != CHOOSE, "EXPORT_ASSESSMENT_SELECTION", "Choose an assessment run or explicitly choose no report for a draft.")
-        purpose, reason = self.purpose.toPlainText(), self.reason.toPlainText()
+        _require(self.start_button.isEnabled() and self.is_current(), "EXPORT_CONFIRMATION",
+                 "Review the scope and selected assessment, then confirm this export.")
         ticket = copy.deepcopy(self._view["ticket"])
-        confirmed, scope_confirmed = self.confirmation.isChecked(), self.scope_confirm.isChecked()
+        args = self.mode.currentData(), self.assessment.currentData(), self.purpose.text().strip(), self.reason.text().strip()
+        confirmed = self.confirmation.isChecked()
+        path = self._pick_path(f"Syllafolio-{args[0]}-catalogue")
+        if not path:
+            return
+        _require(self.is_current() and self.controller.ticket() == ticket and self.confirmation.isChecked(),
+                 "REVISION_CONFLICT", ERROR_TEXT["REVISION_CONFLICT"])
         self.save_draft()
-        self._run("Generate catalogue delivery", lambda _progress, _cancelled:
-            self.controller.start(mode, selected, purpose, reason, confirmed=confirmed, scope_confirmed=scope_confirmed, ticket=ticket))
+        self.controller.generated_job = None
+        self.confirmation.setChecked(False)
+        self.message.setText("Generating the catalogue and saving the verified ZIP…")
+        self._run("Export catalogue", lambda progress, cancelled: self.controller.export_to(
+            path, *args, ticket=ticket, confirmed=confirmed, cancelled=cancelled, progress=progress), self._saved_zip)
+
+    def _save_version(self, job_id):
+        _require(job_id and self.controller.job(job_id)["status"] == "completed", "EXPORT_NOT_READY", ERROR_TEXT["EXPORT_NOT_READY"])
+        path = self._pick_path(job_id)
+        if not path:
+            return
+        self.controller.generated_job = job_id
+        self._run("Save catalogue ZIP", lambda progress, cancelled: self._adapter().save_zip(
+            job_id, path, cancelled=cancelled, progress=progress), self._saved_zip)
+
+    def retry_save(self):
+        self._save_version(self._retry_job)
+
+    def save_package(self):
+        self._save_version(self._selected_job)
 
     def cancel_selected(self):
-        job = self._selected(); _require(job is not None and job["status"] in ACTIVE, "EXPORT_NOT_ACTIVE", "Select the exact active delivery to cancel.")
-        reason, ticket = self.cancel_reason.text(), copy.deepcopy(self._view["ticket"])
-        self.save_draft(); self._run("Cancel selected delivery", lambda _progress, _cancelled:
-            self.controller.cancel(job["job_id"], reason, ticket=ticket))
+        job = self._selected()
+        _require(job and job["status"] in ACTIVE and self.cancel_reason.text().strip(),
+                 "EXPORT_NOT_ACTIVE", "Choose an active export and enter a cancellation reason.")
+        job_id, reason = job["job_id"], self.cancel_reason.text().strip()
+        self._run("Cancel catalogue export", lambda _progress, _cancelled: self.controller.cancel(job_id, reason),
+                  lambda receipt: self.changed.emit(receipt))
 
     def _adapter(self):
         from .annotation_desktop_export_files import ExporterAdapter
         return ExporterAdapter(self.project)
 
-    def save_package(self):
-        _require(self.is_current() and not self.owner._busy, "EXPORT_CONTEXT_CHANGED", "Wait for the current open project.")
-        job = self._selected(); _require(job is not None and job["status"] == "completed", "EXPORT_NOT_READY", "Select a completed package, including an explicitly selected historical version.")
-        path, _filter = QFileDialog.getSaveFileName(self, "Choose a new folder for ZIP and manifest", job["job_id"], "New delivery folder (*)")
-        if path:
-            self.save_draft(); self._run("Save verified ZIP and manifest", lambda progress, cancelled:
-                self._adapter().save_package(job["job_id"], path, cancelled=cancelled, progress=progress), result_kind="save")
+    def _preview(self, job_id):
+        def done(result):
+            _require(QDesktopServices.openUrl(QUrl.fromLocalFile(result["html_path"])), "EXPORT_PREVIEW_OPEN",
+                     "The offline report could not be opened. Open report.html from the extracted ZIP.")
+            self.previewOpened.emit(result)
+        self._run("Open offline report", lambda progress, cancelled:
+                  self._adapter().prepare_preview(job_id, cancelled=cancelled, progress=progress), done)
 
     def preview_selected(self):
-        _require(self.is_current() and not self.owner._busy, "EXPORT_CONTEXT_CHANGED", "Wait for the current open project.")
-        job = self._selected(); _require(job is not None and job["status"] == "completed", "EXPORT_NOT_READY", "Select a completed version before opening its offline report.")
-        self.save_draft(); self._run("Prepare verified offline report", lambda progress, cancelled:
-            self._adapter().prepare_preview(job["job_id"], cancelled=cancelled, progress=progress), result_kind="preview")
+        self._preview(self._selected_job)
 
-    def _request_workspace(self, signal):
-        _require(self.is_current() and not self.owner._busy, "EXPORT_CONTEXT_CHANGED", "Wait for the current open project.")
-        self.save_draft(); signal.emit()
+    def _preview_saved(self):
+        self._preview(self._saved["job_id"])
+
+    def _open_folder(self):
+        _require(self._saved and QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(self._saved["zip_path"]).parent))),
+                 "EXPORT_DIRECTORY", "The output folder could not be opened.")
+
+    def _request_assessment(self):
+        job_id = self.assessment.currentData()
+        self._request_workspace(self.assessmentRequested, job_id if job_id != CHOOSE else None)
+
+    def _request_workspace(self, signal, *args):
+        _require(self.is_current() and not self.owner._busy, "EXPORT_CONTEXT_CHANGED", "Wait for the current project.")
+        self.save_draft()
+        signal.emit(*args)
 
     def save_draft(self):
         if self._dirty:
             self.store.save({"mode": self.mode.currentData(), "assessment_job_id": self.assessment.currentData(),
-                "purpose": self.purpose.toPlainText(), "reason": self.reason.toPlainText(), "cancel_reason": self.cancel_reason.text(),
-                "selected_job_id": self._selected_job or ""}, (self._view or {}).get("current_fingerprint"))
+                            "purpose": self.purpose.text(), "reason": self.reason.text(), "cancel_reason": self.cancel_reason.text(),
+                            "selected_job_id": self._selected_job or ""}, (self._view or {}).get("current_fingerprint"))
             self._dirty = False
         return True
 
-    def restore_draft(self):
-        _require(self.is_current() and not self.owner._busy, "EXPORT_CONTEXT_CHANGED", "Restore only in the current open project.")
-        value = self.store.load(); _require(value is not None, "EXPORT_DRAFT_MISSING", "No unsubmitted delivery form is stored.")
-        form = value["form"]; self._loading = True
-        self.mode.setCurrentIndex(max(0, self.mode.findData(form["mode"])))
-        self.assessment.setCurrentIndex(max(0, self.assessment.findData(form["assessment_job_id"])))
-        self.purpose.setPlainText(form["purpose"]); self.reason.setPlainText(form["reason"]); self.cancel_reason.setText(form["cancel_reason"])
-        self._selected_job = form["selected_job_id"] or None; self._loading = False
-        self.refresh(force=True); self.scope_confirm.setChecked(False); self.confirmation.setChecked(False); self._dirty = False
-        self.message.setText("Unsubmitted delivery input restored, not a package or command. Review the scope and assessment selection again; all confirmations are cleared."
-            + (" The saved scope/source/catalogue context changed." if value.get("context_fingerprint") != self._view.get("current_fingerprint") else ""))
+    def _restore_form(self):
+        try:
+            value = self.store.load()
+        except ExportError as exc:
+            self.message.setText(system_error(exc))
+            return
+        if not value:
+            return
+        form = value["form"]
+        self._loading = True
+        try:
+            self.purpose.setText(form["purpose"])
+            self.reason.setText(form["reason"])
+            # A changed project needs fresh export choices. Earlier notes remain editable.
+            if value.get("context_fingerprint") == self._view["current_fingerprint"]:
+                self.mode.setCurrentIndex(max(0, self.mode.findData(form["mode"])))
+                self.assessment.setCurrentIndex(max(0, self.assessment.findData(form["assessment_job_id"])))
+            self._dirty = False
+        finally:
+            self._loading = False
+        self._buttons()
 
     def invalidate(self, reason):
-        self._invalid = reason; self._epoch += 1; self.scope_confirm.setChecked(False); self.confirmation.setChecked(False)
-        self.stop(); self.message.setText(reason); self._buttons()
+        self._invalid = reason
+        self._epoch += 1
+        self._waiting = False
+        self.confirmation.setChecked(False)
+        self.stop()
+        self.message.setText(reason)
+        self._buttons()
 
-    def stop(self): self.timer.stop()
-
-    def _layout_footer(self):
-        columns = 2 if self.width() < 760 else 4
-        if columns == self._footer_columns: return
-        self._footer_columns = columns
-        for button in self.footer_buttons: self.footer.removeWidget(button)
-        for i, button in enumerate(self.footer_buttons): self.footer.addWidget(button, i // columns, i % columns)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if hasattr(self, "footer_buttons"): self._layout_footer()
+    def stop(self):
+        self.timer.stop()
 
     def showEvent(self, event):
         super().showEvent(event)
         if hasattr(self, "timer") and self.is_current():
-            self._waiting = False; self.refresh(force=not self.owner._busy); self.timer.start()
+            self.refresh(force=True)
+            self.timer.start()
 
     def reject(self):
-        try: self.save_draft()
-        except Exception as exc: self._guard(lambda: (_ for _ in ()).throw(exc)); return
-        self._epoch += 1; self._waiting = False; self.stop(); super().reject()
+        try:
+            self.save_draft()
+        except Exception as exc:
+            self._guard(lambda: (_ for _ in ()).throw(exc))
+            return
+        self.confirmation.setChecked(False)
+        self.stop()
+        super().reject()
 
     def closeEvent(self, event):
-        try: self.save_draft()
-        except Exception as exc: self._guard(lambda: (_ for _ in ()).throw(exc)); event.ignore(); return
-        self._epoch += 1; self._waiting = False; self.stop(); super().closeEvent(event)
+        try:
+            self.save_draft()
+        except Exception as exc:
+            event.ignore()
+            self._guard(lambda: (_ for _ in ()).throw(exc))
+            return
+        self.confirmation.setChecked(False)
+        self.stop()
+        super().closeEvent(event)

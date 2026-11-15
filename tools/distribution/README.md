@@ -1,4 +1,4 @@
-# Syllafolio Windows x64 1.0.3
+# Syllafolio Windows x64 1.0.4
 
 Syllafolio's original application code is licensed under the [MIT License](LICENSE). Copyright (c) 2026 Zhaocun Lin. Bundled third-party components retain their respective licenses.
 
@@ -10,7 +10,7 @@ For one recording with an existing annotation table, choose **Project → New pr
 
 New projects can optionally use **Band-pass filter** during import. It is off by default; the starting settings are **500–15000 Hz**, Butterworth order **4**, and are adjustable. Enabling it filters the complete source before slicing, and both audition and features use the filtered PCM. Original source files are kept unchanged. This import option changes project audio; **View → Display settings…** changes only its presentation.
 
-The sidebar contains **Candidate Groups**, **Global pool** and **Family reviews**. Right-click Candidate Groups to open candidate organization. Workspace contains **Final checks**, **Type definitions and directed review**, **Internal assessment** and **Catalogue delivery**. Recording sources and checkpoints/history are in Project. **View → Tasks…** remains available with no active tasks.
+The sidebar contains **Candidate Groups**, **Global pool** and **Family reviews**. Right-click Candidate Groups to open candidate organization. Workspace contains **Final checks**, **Type definitions**, **Internal assessment** and **Export catalogue**. Recording sources and checkpoints/history are in Project. **View → Tasks…** remains available with no active tasks.
 
 **Run_Checks.cmd** checks this package's integrity, dependency imports and a blank Windows window. It does not run the omitted material acceptance suite or certify audibility, annotation decisions or the complete scientific workflow. `Run_Checks.cmd --static-only` skips the window. The command prints the actual report location, including any fallback used for a read-only installation. **Record_Feedback.cmd** records only checks you actually performed.
 

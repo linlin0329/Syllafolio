@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
+import tempfile
 import threading
 from urllib.parse import unquote, urlsplit
 import uuid
@@ -230,10 +231,64 @@ class ExporterAdapter:
             "counts": copy.deepcopy(manifest["counts"]), "media_count": manifest["media_count"], "file_count": len(names),
             "bundle_bytes": bundle_bytes, "assessment_job_id": job["assessment_job_id"], "verified": True}
         _cancel(cancelled)
+        summary["inventory"] = self._inventory(document)
         return summary, paths, files, raw_manifest
+
+    @staticmethod
+    def _inventory(document):
+        from .annotation_catalogue_export import _package_inventory
+        return _package_inventory(document["items"],
+                                  ((row["local_type_id"], row.get("card")) for row in document["catalogue"]))
+
+    def frozen_inventory(self, job_id):
+        """Read the scope and examples selected when a previous delivery was prepared."""
+        _require(isinstance(job_id, str) and JOB.fullmatch(job_id), "EXPORT_IDENTITY",
+                 "Select a registered export job in this project.")
+        with self.service._lock:
+            _require(self.project.service is self.service and self.service.run_id == self.run_id
+                     and self.project.metadata["project_id"] == self.project_id, "EXPORT_OWNER",
+                     "The export file owner changed; reopen this project workspace.")
+            job = self.service.store.snapshot(self.run_id).get("catalogue_exports", {}).get("jobs", {}).get(job_id)
+            _require(job and job.get("status") == "completed", "EXPORT_NOT_READY",
+                     "Choose a completed export to inspect its contents.")
+            return self._inventory(job["document"])
 
     def inspect(self, job_id, *, cancelled=None, progress=None):
         return self._verify(job_id, cancelled=cancelled, progress=progress)[0]
+
+    def check_zip_destination(self, destination):
+        target = _no_links(Path(destination))
+        _require(target.suffix.lower() == ".zip" and target.parent.is_dir(),
+                 "EXPORT_DESTINATION_PATH", "Choose a ZIP file in an existing local folder.")
+        protected = (self.project.project_dir, self.service.work_dir, self.service.dataset_dir)
+        _require(not any(target.is_relative_to(root.resolve()) for root in protected),
+                 "EXPORT_DESTINATION_SCOPE", "Save the catalogue ZIP outside the open project.")
+        _require(not target.exists(), "EXPORT_DESTINATION_EXISTS",
+                 "This file already exists. Choose a new ZIP filename to preserve it.")
+        return target
+
+    def save_zip(self, job_id, destination, *, cancelled=None, progress=None):
+        """Copy a verified registered package with its embedded manifest, publishing once."""
+        with self._lock:
+            target = self.check_zip_destination(destination)
+            summary, paths, _, _ = self._verify(job_id, cancelled=cancelled, progress=progress)
+            with tempfile.TemporaryDirectory(prefix=".d4-save-", dir=target.parent) as temp:
+                partial = Path(temp) / "catalogue.zip"
+                _progress(progress, "copy", message="Saving the verified catalogue ZIP.")
+                with paths["catalogue.zip"].open("rb") as src, partial.open("xb") as dst:
+                    digest, _ = _digest(src, expected_size=summary["bundle_bytes"], cancelled=cancelled, output=dst)
+                    dst.flush()
+                    os.fsync(dst.fileno())
+                _require(digest == summary["bundle_sha256"], "EXPORT_CHANGED",
+                         "The registered catalogue ZIP changed while being copied.")
+                _cancel(cancelled)
+                self.check_zip_destination(target)
+                # Both operations fail atomically if a different file won the name.
+                if os.name == "nt":
+                    os.rename(partial, target)
+                else:
+                    os.link(partial, target)
+            return {**summary, "zip_path": str(target), "root": str(target.parent)}
 
     @staticmethod
     def _cleanup(staging):

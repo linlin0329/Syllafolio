@@ -1,6 +1,6 @@
 # Syllafolio user guide
 
-Version **1.0.3** uses the supplied application source and hash-locked dependencies. It starts with an empty workspace and includes no business samples, demonstration projects or acceptance datasets. Build evidence and actual Windows acceptance are separate. Audibility, human type criteria and scientific validity require the actual user to check them.
+Version **1.0.4** uses the supplied application source and hash-locked dependencies. It starts with an empty workspace and includes no business samples, demonstration projects or acceptance datasets. Build evidence and actual Windows acceptance are separate. Audibility, human type criteria and scientific validity require the actual user to check them.
 
 New projects use the revised seven-band spectral contrast calculation. Opening an older project preserves its frozen features, candidate groups and saved review decisions. Re-import the audio into a separate new project to compare groupings with the revised calculation.
 
@@ -68,11 +68,23 @@ Items sent into the pool later do not silently alter an open frozen page. Use **
 
 ## Checks, sources, assessment and delivery
 
-Workspace contains **Final checks**, **Type definitions and directed review**, **Internal assessment** and **Catalogue delivery**. Declare the scope in Final checks and locate missing requirements. Type cards require human criteria and selected examples; draft is not reviewed. Check the complete affected family scope before explicitly preparing a directed issue. It does not automatically reassign items.
+Open **Final checks** below the review tree or from **Workspace**. Both entries show the same project checks, whichever group is selected. Review the scope at the top. When declaring it, choose the whole task or a subset, the target level, and the policies that apply to this delivery. Use the outstanding tasks to open the relevant review or type card. A reviewed unresolved syllable or an exclusion with a recorded reason counts as an outcome. An open review round may still need to be closed.
 
-**Project → Recording sources…** registers actual raw-recording mappings. Validate, inspect conflicts/impact, then explicitly register. Internal assessment uses the fixed protocol and fold-local processing. Balanced accuracy and macro-F1 describe internal acoustic separability of the current human labels. A complete not_estimable report preserves the limits when support is insufficient; do not substitute old scores or silently rerun.
+When the outstanding checks are clear, open the final confirmation, review the evidence and limitations, and confirm all five requirements. This records completion for the displayed scope. Label checkpoints and their history are under **Project → Checkpoints and history…**.
 
-**Project → Export saved records…** exports saved JSON and does not declare completion. In **Catalogue delivery**, explicitly choose Draft or Complete and an assessment version, generate the job, then save its ZIP/manifest or open offline HTML. Complete requires current scope/definition checks and a matching complete report. Missing, failed, cancelled and stale jobs do not count as completion. Keep the report with its CSS, PNG and WAV resources.
+Open **Workspace → Type definitions** to browse the catalogue, or right-click a family under **Family reviews** and choose **Type definition…** to open its card. Record the features that distinguish the type and choose examples you have listened to. While auditioning a page, select one saved family member or Ctrl-click several members of the same family, then use **Add as representative…**. This adds the selection to the card draft. Formally saving or confirming the definition is a separate action.
+
+If you find an unclear boundary, start a directed review from the card. Enter the specific question and its basis, then check the family, definition version and complete set of targets shown before starting. The prepared round opens in the main spectrogram and playback workspace. To return later, choose the same family and continue the current round. When some pages are already saved, the audition opens at the first page with outstanding targets. Routine listening remains available through **Prepare group** in the review tree.
+
+Open **Workspace → Internal assessment**, or choose **Open internal assessment** after confirming Final checks. **Preparation** shows eligible families and the reasons other families fall outside the scoring cohort. A family needs 10 confirmed syllables with known sources from at least 3 original recordings. Scoring needs at least two eligible families and feasible recording-grouped splits. Check missing recording declarations under **Project → Recording sources…**. After human completion, a project with insufficient support can generate a report explaining its limits.
+
+**Results** shows the selected run's coverage, balanced accuracy, macro-F1, family recall and confusion directions. Each direction runs from the human family to the predicted family. Click a confusion pair in a current scored report to compare its syllables with the human-selected representatives of both families. Each example is listed once with its recording and the number of repeats in which it was predicted as the other family. Use the waveform or spectrogram to select sounds for **Play** and **Loop**. To pursue a question, send it to **Type definitions** for review.
+
+**Export assessment…** saves an independent offline assessment ZIP with HTML, CSV, the selected run's original JSON and file checksums. For a full syllable catalogue, select a current scored or support report and choose **Export catalogue with this report…**. The catalogue form opens with that exact run selected.
+
+Open **Workspace → Export catalogue** to save a catalogue ZIP. Check the declared scope, target level, whole-project index and any examples outside the scope. The package includes the whole-task index and audit history; the scope determines which syllables the delivery covers. Use `tables/scope_items.csv` for the scoped syllable table. Select Draft or Complete and confirm the assessment choice. Complete requires current scope and definition checks and a matching completed assessment; a support report can document why scoring was infeasible. A draft can retain unfinished work.
+
+After checking the summary, choose the ZIP destination. Syllafolio generates, verifies and saves the package. If saving fails after generation, retry saving that export from the available versions. Extract the whole ZIP, open **report.html** and follow the family index to the criteria, representative spectrograms and audio. For saved project records in JSON, use **Project → Export annotation records (JSON)…**.
 
 ## Drafts, history, tasks and closing
 

@@ -274,11 +274,11 @@ class IntervalImportDialog(QDialog):
                 if hasattr(result, "close"): result.close()
                 return
             success(result)
-        try:
-            self.owner._run(label, function, completed)
-            self._thread = self.owner._worker
-            thread = self._thread
+        def bind_thread(thread):
+            self._thread = thread
             thread.finished.connect(lambda: self._settled(thread))
+        try:
+            self.owner._run(label, function, completed, before_start=bind_thread)
         except Exception:
             self._waiting = False
             raise

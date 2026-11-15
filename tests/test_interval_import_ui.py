@@ -16,7 +16,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QPushButton
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from syllafolio import annotation_desktop_interval_import as ui
-from syllafolio.annotation_desktop import MainWindow, ProjectContractDialog
+from syllafolio.annotation_desktop import MainWindow, ProjectContractDialog, TaskThread
 from syllafolio.annotation_interval_import import open_preview
 
 
@@ -125,6 +125,20 @@ item []:
         dialog.preview_button.click()
         wait_for(lambda: dialog._pcm is not None and not self.window._busy and not dialog._waiting)
         self.assertFalse(self.errors)
+
+    def test_fast_interval_workers_settle_even_before_start_returns(self):
+        # Force both the file inspection and the first PCM read to finish
+        # before the caller of start() regains control of the UI thread.
+        start = TaskThread.start
+        def finish_immediately(worker):
+            start(worker)
+            self.assertTrue(worker.wait(10000))
+        dialog = self.dialog()
+        with patch.object(TaskThread, "start", finish_immediately):
+            self.loaded(dialog)
+        self.assertIsNone(dialog._thread)
+        self.assertTrue(dialog.confirm_button.isEnabled())
+        dialog.close()
 
     def test_real_preview_tiers_pcm_spectrum_and_laptop_layout(self):
         dialog = self.dialog()

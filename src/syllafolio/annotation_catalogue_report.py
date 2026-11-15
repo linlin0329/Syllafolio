@@ -23,7 +23,7 @@ ITEM_FIELDS = ("item_id", "in_scope", "family_id", "leaf_id", "processing_state"
                "label_status", "category", "reason", "disposition_reason", "reason_code", "reason_code_label",
                "reason_source", "submission_contract_version", "axes_reason", "source_clip_id", "raw_recording_id", "source_frame_start",
                "source_frame_stop", "sample_rate_hz", "family_status", "diagnostic_region",
-               "component_status", "form_status", "boundary_status", "axes", "notes")
+               "component_status", "form_status", "boundary_status", "axes", "notes", "family_name", "leaf_name")
 SOURCE_FIELDS = ("item_id", "in_scope", "source_clip_id", "raw_recording_id", "status", "evidence", "origin", "record_id")
 MEDIA_FIELDS = ("item_id", "type_id", "role", "in_scope", "wav_path", "spectrogram_path", "wav_sha256",
                 "spectrogram_sha256", "source_clip_id", "raw_recording_id", "source_frame_start", "source_frame_stop",
@@ -201,7 +201,7 @@ def _type_rows(document):
         card = row.get("card") or {}
         result.append({
             **{key: copy.deepcopy(row.get(key)) for key in ("local_type_id", "parent_type_id", "definition_state")},
-            "title": row.get("title", card.get("title")), "card_id": card.get("card_id"), "card_revision": card.get("revision"),
+            "title": row.get("title") or card.get("title"), "card_id": card.get("card_id"), "card_revision": card.get("revision"),
             "task_member_count": len(row.get("member_ids", [])), "scope_member_count": len(row.get("scope_member_ids", [])),
             "member_ids": row.get("member_ids", []), "scope_member_ids": row.get("scope_member_ids", []),
             **{key: copy.deepcopy(card.get(key)) for key in TYPE_FIELDS[10:]},
@@ -211,8 +211,12 @@ def _type_rows(document):
 
 def _item_rows(document):
     result = []
+    names = {r["local_type_id"]: r.get("title") or (r.get("card") or {}).get("title")
+             for r in document.get("catalogue", [])}
     for row in document.get("items", []):
         values = copy.deepcopy(row)
+        values["family_name"] = names.get(row.get("family_id"))
+        values["leaf_name"] = names.get(row.get("leaf_id"))
         axes = values.get("axes") or {}
         for field in AXIS_FIELDS:
             if field not in {"family_id", "leaf_id"}:
@@ -250,10 +254,27 @@ def _assessment(document):
     return assessment, report if valid else None
 
 
-def _assessment_html(document, asset_urls):
+def assessment_family_names(state, full_report):
+    """Resolve display labels for the actual definitions bound to this run."""
+    names = {}
+    for key, definition in full_report["frozen_snapshot"]["definitions"].items():
+        card_id = definition.get("card_id")
+        if card_id:
+            card = state.get("type_cards", {}).get(key, {})
+            if card.get("card_id") != card_id:
+                card = state.get("type_card_history", {}).get(card_id, {})
+            if card.get("local_type_id") == key and card.get("title"):
+                names[key] = card["title"]
+    return names
+
+
+def _assessment_html(document, asset_urls, *, standalone=False):
     assessment, report = _assessment(document)
     stale = bool(assessment.get("stale_for_current"))
     status = assessment.get("status", "not_started")
+    names = assessment.get("family_display_names", {})
+    def family(key):
+        return names.get(key) or key
     intro = f'<p class="status">Selected run: {_e(assessment.get("job_id"))} · {_e(_status(status))}</p>'
     if stale:
         intro += '<p class="notice historical">Historical assessment: it does not match this catalogue. The following content is the original assessment snapshot, not metrics for the current catalogue.</p>' + _reasons(assessment.get("stale_reasons"))
@@ -264,7 +285,7 @@ def _assessment_html(document, asset_urls):
     if assessment.get("error"):
         intro += _reasons([assessment["error"]])
     if not report:
-        return '<section id="assessment"><h2>4 · Internal acoustic assessment</h2>' + intro + '</section>'
+        return '<section id="assessment"><h2>Internal acoustic assessment</h2>' + intro + '</section>'
     if assessment.get("report_path"):
         intro += '<p>' + _link(assessment["report_path"], 'Full frozen assessment report and computation audit JSON', asset_urls) + '</p>'
     coverage = report.get("coverage") or {}
@@ -291,27 +312,230 @@ def _assessment_html(document, asset_urls):
         body += '<p class="notice">Not estimable: retain type support and specific reasons without classification scores; random syllable splits are not used to manufacture scores.</p>'
     body += _reasons(report.get("reasons"))
     support = report.get("support", [])
-    body += '<h3>Source support and eligibility</h3>' + _table(["family", 'In scope', 'Confirmed', 'Known / unknown source', 'Source groups', 'Maximum source share', 'Count eligibility / limitations'],
-        [(r.get("family_id"), r.get("n_in_scope"), r.get("n_confirmed"), f'{r.get("n_known_source", "?")} / {r.get("n_unknown_source", "?")}',
+    body += '<h3>Source support and eligibility</h3>' + _table(["Family", "Stable family ID", 'In scope', 'Confirmed', 'Known / unknown source', 'Source groups', 'Maximum source share', 'Count eligibility / limitations'],
+        [(family(r.get("family_id")), r.get("family_id"), r.get("n_in_scope"), r.get("n_confirmed"), f'{r.get("n_known_source", "?")} / {r.get("n_unknown_source", "?")}',
           r.get("n_source_groups"), _percent(r.get("max_source_share")), 'Count requirements met' if r.get("eligible") else "; ".join(x.get("message", x.get("code", "")) for x in r.get("reasons", []))) for r in support])
     body += '<p class="muted">Maximum source share uses confirmed syllables with known sources in that family as its denominator. Original-recording groups are declared by the operator; consistency checks do not certify recording identity or different individual birds.</p>'
     body += '<h3>Per-family recall</h3>' + _table(["family", 'Syllable n', 'Mean recall', 'SD across partitions'],
-        [(r.get("family_id"), r.get("n"), _percent(r.get("recall_mean")), _percent(r.get("recall_sd"))) for r in report.get("per_family", [])], empty='No estimable per-family recall for this run.')
+        [(family(r.get("family_id")), r.get("n"), _percent(r.get("recall_mean")), _percent(r.get("recall_sd"))) for r in report.get("per_family", [])], empty='No estimable per-family recall for this run.')
     confusion = report.get("confusion") or {}
     body += '<h3>Main confusion directions</h3>' + _table(['Human family in selected assessment', 'Predicted family', 'Mean row-normalized confusion', 'SD across partitions'],
-        [(r.get("actual_family_id"), r.get("predicted_family_id"), _percent(r.get("rate_mean")), _percent(r.get("rate_sd"))) for r in confusion.get("top_pairs", [])], empty='No nonzero main confusion pairs to report, or confusion is not estimable for this run.')
+        [(family(r.get("actual_family_id")), family(r.get("predicted_family_id")), _percent(r.get("rate_mean")), _percent(r.get("rate_sd"))) for r in confusion.get("top_pairs", [])], empty='No nonzero main confusion pairs to report, or confusion is not estimable for this run.')
+    family_ids = confusion.get("family_ids", [])
+    if 0 < len(family_ids) <= 20:
+        body += '<h3>Confusion matrix</h3>' + _table(
+            ["Human family ↓ / Predicted →", *(family(i) for i in family_ids)],
+            ([family(row_id), *(_percent(x) for x in values)] for row_id, values in
+             zip(family_ids, confusion["matrix_mean_row_normalized"], strict=True)))
     body += '<p>' + _link("tables/assessment_confusion.csv", 'Complete mean normalized confusion matrix CSV (including zeros)', asset_urls) + ' · ' + _link("tables/assessment_repeats.csv", 'Per-repeat metrics CSV', asset_urls) + ' · ' + _link("tables/assessment_predictions.csv", 'All out-of-fold predictions CSV', asset_urls) + '</p>'
     body += '<p class="muted">Rows are the human families in the selected assessment; columns are model predictions. The main pairs are at most 20 directions stored in the frozen report; CSV retains the complete matrix. Low scores do not automatically relabel, reopen review or merge types.</p>'
     body += '<h3>Method and limitations</h3><p>Fixed 94-dimensional non-energy acoustics and 2048-dimensional log-mel representations; scaling, PCA and classifiers are fitted only within training folds. Declared original recordings define groups for 3 folds × 5 repeats with class-balanced logistic regression. At least 10 confirmed syllables with known sources, 3 source groups and 2 eligible families are computational requirements, not thresholds of biological reliability.</p>'
     body += _reasons(report.get("warnings")) + _reasons(report.get("limitations"))
     body += '<details><summary>Frozen preset, software versions and fold plan</summary><pre>' + _e({"preset": report.get("preset"), "packages": report.get("audit", {}).get("packages"), "plan": report.get("plan")}) + '</pre></details>'
-    title = '4 · Historical internal assessment (not applicable to the current catalogue)' if stale else '4 · Internal acoustic assessment for the current frozen version'
+    title = 'Historical internal assessment' if stale else 'Assessment results'
+    if not standalone:
+        title = 'Historical internal assessment' if stale else 'Internal acoustic assessment'
     return f'<section id="assessment" class="{"historical" if stale else ""}"><h2>{title}</h2>{body}</section>'
 
 
 CSS = """
 :root{color-scheme:light;--ink:#23353d;--muted:#62757d;--line:#dce4e7;--accent:#345e67;--paper:#fff;--wash:#f2f6f7}*{box-sizing:border-box}body{margin:0;background:#edf1f2;color:var(--ink);font:15px/1.65 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans CJK SC",sans-serif}main{max-width:1180px;margin:32px auto;padding:36px 44px;background:var(--paper);border:1px solid var(--line)}header{border-bottom:3px solid var(--accent);padding-bottom:24px}h1{font-size:29px;line-height:1.3;margin:8px 0 12px}h2{font-size:22px;line-height:1.4;margin:0 0 18px}h3{font-size:17px;margin:24px 0 10px}p{margin:8px 0 14px}.eyebrow{letter-spacing:.13em;font-size:11px;font-weight:700;color:var(--accent)}.meta,.muted,small{color:var(--muted)}.meta{font-size:13px;overflow-wrap:anywhere}.badge{display:inline-block;background:var(--wash);border:1px solid #b7cbd0;padding:3px 12px;border-radius:4px;font-weight:600}.notice{border-left:3px solid #79949c;background:var(--wash);padding:12px 16px}.historical .notice,.notice.historical{border-left-color:#977e58;background:#f7f3ec}nav{display:flex;gap:9px 22px;flex-wrap:wrap;margin-top:20px}a{color:var(--accent);text-underline-offset:3px}section{padding:30px 0;border-bottom:1px solid var(--line)}.table-wrap{width:100%;overflow:auto;margin:10px 0 16px}table{width:100%;border-collapse:collapse;text-align:left;font-size:13px}th,td{padding:9px 11px;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}th{background:var(--wash);font-weight:600}td{max-width:380px}code,pre{font:12px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace}pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:14px;background:var(--wash)}.type-card{margin:20px 0;border:1px solid var(--line);padding:22px;break-inside:avoid}.type-card.leaf{margin-left:26px;border-left:3px solid #b8cdd2}.type-card h3{margin-top:0}.type-meta{font-size:13px;color:var(--muted)}.example-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.example{margin:0;border:1px solid var(--line);padding:12px;break-inside:avoid}.example img{width:100%;height:auto;display:block}.example figcaption{font-size:12px;overflow-wrap:anywhere}.example audio{width:100%;margin-top:8px}.metrics{display:flex;gap:20px;flex-wrap:wrap;margin:20px 0}.metrics>div{min-width:190px;padding:16px 20px;background:var(--wash);border:1px solid var(--line)}.metrics span,.metrics strong,.metrics small{display:block}.metrics strong{font-size:27px;font-weight:600}.metrics small{font-size:12px}summary{cursor:pointer;color:var(--accent);font-weight:600}details{margin:14px 0}.reasons{padding-left:22px}.reasons li{margin-bottom:6px}.print-note{font-size:12px;color:var(--muted)}footer{padding-top:24px;font-size:12px;color:var(--muted)}@media(max-width:720px){main{margin:0;padding:24px 16px;border:0}.example-grid{grid-template-columns:1fr}.type-card.leaf{margin-left:12px}h1{font-size:25px}}@page{size:A4;margin:16mm}@media print{body{background:white;font-size:10pt}main{max-width:none;margin:0;padding:0;border:0}header{border-bottom-width:2px}nav,.print-note,audio{display:none}h1{font-size:21pt}h2{font-size:15pt}h3{font-size:12pt}section{padding:18px 0}table{font-size:8.5pt}thead{display:table-header-group}tr,img{break-inside:avoid}.table-wrap{overflow:visible}th,td{padding:5px 6px}.type-card{padding:12px}.example-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.example{padding:8px}a{color:inherit}.metrics strong{font-size:19pt}details{display:block}details>*{display:block!important}summary{list-style:none}pre{font-size:8pt}footer{font-size:8pt}}
 """
+
+
+CATALOGUE_CSS = """
+.catalogue-home main {max-width:1240px;margin:24px auto;padding:28px 36px}
+.catalogue-home header {padding-bottom:16px}
+.cover-title,.card-heading {display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:4px 16px}
+.cover-title h1 {margin:0}
+.cover-title .badge {font-size:13px}
+.cover-purpose {font-size:17px;margin-bottom:5px}
+.cover-counts {display:flex;flex-wrap:wrap;gap:4px 20px;list-style:none;margin:12px 0 0;padding:0}
+.cover-counts li {white-space:nowrap}
+.catalogue-home header nav {margin-top:12px}
+.family-directory {display:grid;grid-template-columns:minmax(180px,23%) minmax(0,1fr);align-items:start;gap:26px}
+.family-index {position:sticky;top:12px;display:block;margin:0;padding:12px 14px;background:var(--wash);border:1px solid var(--line)}
+.family-index h2 {font-size:17px;margin:0}
+.family-index p {font-size:13px;margin:3px 0}
+.family-index ul {margin:0;padding:0;list-style:none}
+.family-index .index-list {margin-top:8px;max-height:56vh;overflow:auto}
+.family-index li a {display:block;padding:5px 4px;overflow-wrap:anywhere;text-decoration:none}
+.family-index li a:hover,.family-index li a:focus {text-decoration:underline;background:white}
+.family-index li ul {padding-left:14px;border-left:2px solid var(--line)}
+.index-id {display:block;color:var(--muted);font-size:11px}
+.family-cards>.type-card:first-child {margin-top:0}
+.catalogue-home .type-card {margin:0 0 22px;padding:16px 20px;border-top:3px solid var(--accent);scroll-margin:10px}
+.catalogue-home .type-card:target {outline:2px solid var(--accent);outline-offset:2px}
+.catalogue-home .type-card.leaf {margin-left:16px;border-top-color:var(--line)}
+.card-heading h3 {font-size:21px;margin:0;overflow-wrap:anywhere}
+.card-heading a {font-size:13px}
+.catalogue-home .type-card h4 {margin:10px 0 3px}
+.type-meta {margin:2px 0 8px}
+.diagnostic-criteria p {margin:0 0 6px}
+.catalogue-home .example-grid {grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:8px}
+.catalogue-home .example {max-width:520px;background:#fcfdfd;padding:8px}
+.catalogue-home .example img {max-height:230px;object-fit:contain;object-position:left center}
+.catalogue-home .example audio {display:block;margin:3px 0}
+.example summary,.example p {font-size:12px}
+.example details {margin:4px 0 0}
+@media(max-width:780px) {
+  .catalogue-home main {margin:0;padding:18px 14px}
+  .family-directory {grid-template-columns:1fr;gap:14px}
+  .family-index {position:static}
+  .family-index .index-list {max-height:23vh}
+  .catalogue-home .type-card {padding:12px}
+}
+@media print {
+  .catalogue-home main {margin:0;padding:0}
+  .family-directory {display:block}
+  .family-index,.card-heading a {display:none}
+  .catalogue-home .example {max-width:none}
+}
+"""
+
+
+def _type_anchor(type_id):
+    # Produce unique fragment IDs even for Unicode and URL punctuation.
+    return "type-" + type_id.encode("utf-8").hex()
+
+
+def _type_link(row, include_id=False):
+    key = row["local_type_id"]
+    name = row.get("title") or key
+    label = _e(name)
+    if include_id:
+        context = f'{row["scope_member_count"]}/{row["task_member_count"]} in scope'
+        suffix = _e(key) + " · " if name != key else ""
+        label += f' <span class="index-id">{suffix}{context}</span>'
+    return f'<a href="#{_type_anchor(key)}">{label}</a>'
+
+
+def _example_player(media, *, filtered, asset_urls):
+    ident = media["item_id"]
+    role = media["role"]
+    scope = "In scope" if media["in_scope"] else "Outside scope · reference example"
+    parts = [f'<figure class="example" data-syllable-id="{_e(ident)}" data-role="{_e(role)}">',
+             f'<figcaption><strong>{_e(ident)}</strong> · {_e(_status(role))} · {scope}</figcaption>']
+    image = media.get("spectrogram_path")
+    if image:
+        parts.append(f'<img src="{_href(image, asset_urls)}" alt="Spectrogram of {_e(ident)}" loading="lazy">')
+    wav = media.get("wav_path")
+    if wav:
+        parts.append(f'<audio controls preload="none" aria-label="Listen to {_e(ident)}" src="{_href(wav, asset_urls)}"></audio>')
+    parts.append('<details><summary>Source and media details</summary>')
+    if wav:
+        parts.append(_link(wav, "Open filtered syllable WAV" if filtered else "Open syllable WAV", asset_urls))
+    parts.append(f'<p>Parent clip {_e(media.get("source_clip_id"))} · Original recording {_e(media.get("raw_recording_id"))}</p>')
+    parts.append('<pre>' + _e({k: media.get(k) for k in ("audio_processing", "source_frame_start", "source_frame_stop",
+        "sample_rate_hz", "display", "wav_sha256", "spectrogram_sha256")}) + '</pre></details></figure>')
+    return "".join(parts)
+
+
+def _type_card(row, type_map, media, *, filtered, asset_urls):
+    key = row["local_type_id"]
+    parent = row["parent_type_id"]
+    name = row.get("title") or key
+    level = "Family" if parent is None else "Fine form · " + (_type_link(type_map[parent]) if parent in type_map else _e(parent))
+    parts = [f'<article id="{_type_anchor(key)}" class="type-card {"family" if parent is None else "leaf"}" data-type-id="{_e(key)}" tabindex="-1">',
+             f'<div class="card-heading"><h3>{_e(name)}</h3><a href="#family-index">Family index</a></div>',
+             f'<p class="type-meta">{level} · <code>{_e(key)}</code> · {_e(_status(row["definition_state"]))}<br>'
+             f'{row["scope_member_count"]} in scope / {row["task_member_count"]} project members</p>',
+             '<div class="diagnostic-criteria"><h4>Diagnostic criteria</h4>',
+             _paragraphs(row["diagnostic_body"] or "No diagnostic criteria recorded."), '</div>']
+    if row.get("main_variant_difference"):
+        parts.extend(['<h4>Main form and variants</h4>', _paragraphs(row["main_variant_difference"])])
+    representatives = [m for m in media if m["role"] == "representative"]
+    if representatives:
+        parts.append('<h4>Representative syllables</h4><div class="example-grid">')
+        parts.extend(_example_player(m, filtered=filtered, asset_urls=asset_urls) for m in representatives)
+        parts.append('</div>')
+    else:
+        parts.append('<p class="muted">No representative audio has been registered for this type.</p>')
+    other = [m for m in media if m["role"] != "representative"]
+    if other:
+        parts.append(f'<details><summary>Additional examples ({len(other)})</summary><div class="example-grid">')
+        parts.extend(_example_player(m, filtered=filtered, asset_urls=asset_urls) for m in other)
+        parts.append('</div></details>')
+    parts.append('<details><summary>Definition evidence and member IDs</summary>')
+    for caption, field in (("Uncertainties", "uncertainties"), ("Basis for this definition", "reason")):
+        if row.get(field):
+            parts.extend([f'<h4>{caption}</h4>', _paragraphs(row[field])])
+    competitors = row.get("competing_type_ids") or []
+    if competitors:
+        links = [_type_link(type_map[k]) if k in type_map else _e(k) for k in competitors]
+        parts.append('<p>Competing types · ' + " · ".join(links) + '</p>')
+    parts.append('<pre>' + _e({k: row.get(k) for k in ("member_ids", "scope_member_ids", "representative_ids",
+        "atypical_ids", "counterexample_ids", "card_id", "card_revision")}) + '</pre></details></article>')
+    return "".join(parts)
+
+
+def _family_directory(types, examples, *, filtered, asset_urls):
+    by_id = {row["local_type_id"]: row for row in types}
+    children, media = {}, {}
+    for row in types:
+        children.setdefault(row["parent_type_id"], []).append(row)
+    for ex in examples:
+        media.setdefault(ex["type_id"], []).append(ex)
+    def order(row):
+        return (not row["scope_member_count"], (row["title"] or row["local_type_id"]).casefold(), row["local_type_id"])
+    roots = [r for r in types if r["parent_type_id"] is None or r["parent_type_id"] not in by_id]
+    nav, cards = [], []
+    for family in sorted(roots, key=order):
+        family_id = family["local_type_id"]
+        leaves = sorted(children.get(family_id, []), key=order)
+        nav.append("<li>" + _type_link(family, include_id=True))
+        if leaves:
+            nav.append("<ul>" + "".join("<li>" + _type_link(leaf, include_id=True) + "</li>" for leaf in leaves) + "</ul>")
+        nav.append("</li>")
+        cards.extend(_type_card(r, by_id, media.get(r["local_type_id"], []), filtered=filtered, asset_urls=asset_urls)
+                     for r in [family, *leaves])
+    if not cards:
+        cards.append('<p>No human-defined families have been recorded.</p>')
+    parts = ['<section id="catalogue"><div class="family-directory">',
+             '<nav class="family-index" id="family-index" aria-label="Family index" tabindex="-1"><h2>Family index</h2>',
+             '<p>Find a name or ID with your browser’s Find command.</p>',
+             '<ul class="index-list">', *nav, '</ul></nav><div class="family-cards">',
+             *cards,
+             '</div></div><p>', _link("tables/types.csv", "Type definitions CSV", asset_urls), ' · ',
+             _link("tables/examples.csv", "Example roles and media CSV", asset_urls), '</p></section>']
+    return "".join(parts)
+
+
+def _cover(document, mode, scope, items, scoped, examples):
+    counts = document.get("counts", {})
+    total, selected = len(items), len(scoped)
+    outside_examples = {m["item_id"] for m in examples if not m["in_scope"]}
+    media_ids = {m["item_id"] for m in examples}
+    declared = scope.get("declared")
+    level = {"family": "family level", "leaf": "fine-form level"}.get(scope.get("target_level"), "level unspecified")
+    scope_label = f'Declared scope · {selected} of {total} syllables · {level}' if declared else f'Provisional scope · all {total} project syllables'
+    title = "Complete catalogue" if mode == "complete" else "Draft catalogue"
+    assessment = document.get("assessment") or {}
+    run_status = assessment.get("status") or "not_started"
+    assessment_label = {"completed": "Scored", "not_estimable": "Support report (not estimable)"}.get(run_status, _status(run_status))
+    if assessment.get("stale_for_current"):
+        assessment_label += " · historical"
+    timestamp = str(document.get("created_at") or "")
+    date = timestamp.partition("T")[0] or "Date not recorded"
+    parts = ['<header><div class="cover-title"><h1>Syllable type catalogue</h1>',
+             f'<span class="badge">{title}</span></div>',
+             f'<p class="cover-purpose">{_e(scope_label)} · {_e(counts.get("families", 0))} in-scope families</p>']
+    if scope.get("purpose"):
+        parts.append(f'<p>{_e(scope["purpose"])}</p>')
+    parts.append('<ul class="cover-counts" aria-label="Review outcomes in scope">')
+    for field, label in (("assigned", "assigned"), ("unresolved", "reviewed unresolved"),
+                         ("excluded", "excluded"), ("unreviewed", "unfinished")):
+        parts.append(f'<li><strong>{_e(counts.get(field))}</strong> {label}</li>')
+    parts.append('</ul>')
+    parts.append(f'<p class="meta">Package includes the index and audit for all {total} project syllables'
+                 f' · {len(media_ids)} example recordings ({len(outside_examples)} outside the scope)'
+                 f' · <time datetime="{_e(timestamp)}">{_e(date)}</time> · Assessment: {_e(assessment_label)}</p>')
+    parts.append('<nav aria-label="Report sections"><a href="#family-index">Families and examples</a>'
+                 '<a href="#scope">Scope and status</a><a href="#registers">Syllable records</a>'
+                 '<a href="#assessment">Internal assessment</a><a href="#provenance">Versions and files</a></nav></header>')
+    return "".join(parts)
+
+
 
 
 def render_html(document, asset_urls=None):
@@ -331,9 +555,9 @@ def render_html(document, asset_urls=None):
     if mode == "complete" and (not scope.get("declared") or not report or assessment.get("stale_for_current")
                                or not (completion.get("report") or {}).get("can_submit") or not completion.get("record")):
         raise ValueError('Complete delivery requires valid human completion, a declared scope and a matching assessment')
-    status = _status(mode)
-    body = f'<header><p class="eyebrow">ACOUSTIC ANNOTATION · CATALOGUE</p><h1>Syllable type catalogue and internal assessment</h1><span class="badge">{_e(status)}</span><p class="meta">Export ID {_e(document.get("export_id"))}<br>Generated {_e(document.get("created_at"))}<br>Snapshot fingerprint {_e(document.get("snapshot_fingerprint"))}</p><p>This report preserves types, members and judgments submitted by the operator. Complete delivery means engineering records are complete for the declared scope; it does not establish unique biological type truth, annotation accuracy or workflow efficiency.</p><nav><a href="#scope">Scope and status</a><a href="#catalogue">Type catalogue</a><a href="#registers">Members and dispositions</a><a href="#assessment">Internal assessment</a><a href="#provenance">Versions and files</a></nav><p class="print-note">Open this file offline. To create a PDF, use the browser Print → Save as PDF command. Audio plays from packaged WAV files; PDF does not embed audio.</p></header>'
-    body += '<section id="scope"><h2>1 · Declared scope and delivery status</h2>'
+    body = _cover(document, mode, scope, items, scoped, examples)
+    body += _family_directory(types, examples, filtered=bool(document.get("audio_preprocessing")), asset_urls=asset_urls)
+    body += '<section id="scope"><h2>Declared scope and delivery status</h2>'
     if document.get("audio_preprocessing"):
         params = document["audio_preprocessing"]
         body += (f'<p>Import band-pass filter: {_e(params["low_hz"])}–{_e(params["high_hz"])} Hz, '
@@ -344,7 +568,7 @@ def render_html(document, asset_urls=None):
         body += '<p class="notice">This report applies only to the listed frozen scope. Out-of-scope members and examples are marked and excluded from in-scope completion counts.</p>'
     counts = document.get("counts") or {}
     source_counts = document.get("source_registry", {}).get("counts") or {}
-    body += _table(['Field', 'Frozen value'], [('Scope ID', scope.get("scope_id")), ('Purpose', scope.get("purpose")),
+    body += _table(['Field', 'Frozen value'], [('Project ID', (document.get("project_identity") or {}).get("project_id")), ('Export ID', document.get("export_id")), ('Generated', document.get("created_at")), ('Snapshot fingerprint', document.get("snapshot_fingerprint")), ('Scope ID', scope.get("scope_id")), ('Purpose', scope.get("purpose")),
         ('All task syllables', scope.get("total_task_items", len(items))), ('Syllables in this scope', len(scoped)),
         ('Out-of-scope syllables', len(items) - len(scoped)), ('In-scope family-assigned', counts.get("assigned")),
         ('In-scope family-unresolved', counts.get("unresolved")), ('In-scope excluded', counts.get("excluded")),
@@ -355,37 +579,7 @@ def render_html(document, asset_urls=None):
     completion = document.get("completion") or {}
     body += _reasons((completion.get("report") or {}).get("missing"))
     body += '<details><summary>Full scope, purpose and human completion record</summary><pre>' + _e({"scope": scope, "counts": document.get("counts"), "completion": completion}) + '</pre></details></section>'
-    body += '<section id="catalogue"><h2>2 · Type catalogue and human examples</h2><p>A family is a human-defined operational type; a leaf is a terminal subtype within it. Unknown forms are not automatically filled as main forms or variants. Whole-task and in-scope member counts are reported separately. Rare types remain even when ineligible for internal assessment.</p>'
-    body += _table(['Type ID', 'Parent family', 'Name', 'In-scope / task members', 'Definition status'],
-        [(r["local_type_id"], r["parent_type_id"] or 'Family level', r["title"], f'{r["scope_member_count"]} / {r["task_member_count"]}', _status(r["definition_state"])) for r in types])
-    type_map = {r["local_type_id"]: r for r in types}
-    ordered = []
-    for family in [r for r in types if r["parent_type_id"] is None]:
-        ordered.append(family)
-        ordered.extend(r for r in types if r["parent_type_id"] == family["local_type_id"])
-    ordered.extend(r for r in types if r["parent_type_id"] is not None and r["parent_type_id"] not in type_map)
-    for row in ordered:
-        key = row["local_type_id"]
-        body += f'<article class="type-card {"leaf" if row["parent_type_id"] else "family"}"><h3>{_e(key)} · {_e(row["title"])}</h3><p class="type-meta">{'Leaf type · Parent family ' + _e(row["parent_type_id"]) if row["parent_type_id"] else 'Family level'} · In scope {row["scope_member_count"]} / Task members {row["task_member_count"]} · {_e(_status(row["definition_state"]))}</p><h4>Diagnostic body</h4>' + _paragraphs(row["diagnostic_body"])
-        body += '<h4>Main-form / variant relationships and differences</h4>' + _paragraphs(row["main_variant_difference"])
-        body += '<h4>Uncertainties and reasoning</h4>' + _paragraphs(row["uncertainties"]) + _paragraphs(row["reason"])
-        body += '<p>Competing types: ' + _e(row["competing_type_ids"]) + '</p>'
-        media_rows = [m for m in examples if m.get("type_id") == key]
-        body += '<div class="example-grid">'
-        for media in media_rows:
-            body += '<figure class="example"><figcaption><strong>' + _e(_status(media.get("role"))) + '</strong> · ' + _e(media.get("item_id")) + ' · ' + ('In scope' if media.get("in_scope") else 'Out-of-scope reference') + '</figcaption>'
-            if media.get("spectrogram_path"):
-                body += f'<img src="{_href(media["spectrogram_path"], asset_urls)}" alt="{_e(media.get("item_id"))} spectrogram" loading="lazy">'
-            if media.get("wav_path"):
-                audio_label = 'Open filtered syllable WAV' if document.get("audio_preprocessing") else 'Open original-PCM syllable WAV'
-                body += f'<audio controls preload="none" src="{_href(media["wav_path"], asset_urls)}"></audio><p>' + _link(media["wav_path"], audio_label, asset_urls) + '</p>'
-            body += '<figcaption>Parent clip ' + _e(media.get("source_clip_id")) + ' · Declared original recording ' + _e(media.get("raw_recording_id")) + '</figcaption><details><summary>Audio, spectrogram and source parameters</summary><pre>' + _e({k: media.get(k) for k in ("audio_processing", "source_frame_start", "source_frame_stop", "sample_rate_hz", "display", "wav_sha256", "spectrogram_sha256")}) + '</pre></details></figure>'
-        body += '</div>'
-        if not media_rows:
-            body += '<p class="muted">This type has no available human example media; the program does not automatically select representatives.</p>'
-        body += '<details><summary>Member IDs and example registrations</summary><pre>' + _e({k: row.get(k) for k in ("member_ids", "scope_member_ids", "representative_ids", "atypical_ids", "counterexample_ids", "card_id", "card_revision")}) + '</pre></details></article>'
-    body += '<p>' + _link("tables/types.csv", 'Full type catalogue CSV', asset_urls) + ' · ' + _link("tables/examples.csv", 'Example roles and media index CSV', asset_urls) + '</p></section>'
-    body += '<section id="registers"><h2>3 · Syllable membership, unresolved items and exclusions</h2><p>Membership, diagnostic-region observability, diagnostic-component evidence, form and boundary status remain separate. Unrecorded three-axis fields remain unknown; family membership does not imply them.</p>'
+    body += '<section id="registers"><h2>Syllable records, unresolved items and exclusions</h2><p>Membership, diagnostic-region observability, diagnostic-component evidence, form and boundary status remain separate. Unrecorded three-axis fields remain unknown; family membership does not imply them.</p>'
     body += _table(['Syllable ID', "family", "leaf", 'Disposition / processing state', 'Form', 'Disposition note (optional)', 'Operator-selected reason category', 'Disposition reason source', 'Submission contract', 'Three-axis reasoning'],
         [(r.get("item_id"), r.get("family_id"), r.get("leaf_id"), f'{_text(r.get("disposition"))} / {_status(r.get("processing_state"))}',
           r.get("form_status"), r.get("disposition_reason"), _disposition_code(r), _disposition_source(r),
@@ -395,12 +589,12 @@ def render_html(document, asset_urls=None):
     body += '<p>' + ' · '.join(_link(path, label, asset_urls) for path, label in (("tables/scope_items.csv", 'All members in this scope'), ("tables/items.csv", 'All task members (with in_scope)'), ("tables/unresolved.csv", 'In-scope family-unresolved list'), ("tables/form_unresolved.csv", 'Family assigned, form unresolved / unjudged'), ("tables/excluded.csv", 'In-scope exclusions'), ("tables/unfinished.csv", 'In-scope unfinished items'), ("tables/sources.csv", 'Original-recording declarations and evidence'))) + '</p>'
     body += '<p class="muted">Family dispositions follow frozen category values: assigned, unresolved, excluded and unreviewed. Unresolved or unjudged forms are listed separately in form_unresolved.csv; these items remain assigned and are not counted again as family-unresolved. Reason categories are operator-selected disposition codes, not free-text evidence of actual listening, and are not inserted into notes. Disposition notes may be empty; source and submission contract have separate columns. Missing legacy fields remain unrecorded. Disposition reasons and current three-axis evidence remain separate; categories or earlier batch notes do not substitute for current fine-review reasoning. The main JSON retains original fields and complete reasons.</p></section>'
     body += _assessment_html(document, asset_urls)
-    body += '<section id="provenance"><h2>5 · Versions, files and review evidence</h2><p>An export is a frozen snapshot and does not update after label, source or definition changes. Export a new version from the application when needed. This package does not merge types, choose examples, rerun assessment or finish human work for you.</p><p>' + _link("catalogue.json", 'Original-value frozen catalogue JSON', asset_urls) + ' · ' + _link("README.md", 'Package files and interpretation limits', asset_urls) + '</p>'
+    body += '<section id="provenance"><h2>Versions, files and review evidence</h2><p>An export is a frozen snapshot and does not update after label, source or definition changes. Export a new version from the application when needed. This package does not merge types, choose examples, rerun assessment or finish human work for you.</p><p>' + _link("catalogue.json", 'Original-value frozen catalogue JSON', asset_urls) + ' · ' + _link("README.md", 'Package files and interpretation limits', asset_urls) + '</p>'
     if document.get("audit_path"):
         body += '<p>' + _link(document["audit_path"], 'Full audit record JSON', asset_urls) + '</p>'
     body += '<details><summary>Input and implementation versions</summary><pre>' + _e(document.get("versions", {})) + '</pre></details></section>'
     body += '<footer>Acoustic annotation · Data and metrics come only from frozen records. Media includes explicitly registered human examples, not the full audio corpus or a backup for restoring the entire workspace. CSV is a spreadsheet-safe copy; JSON preserves original text.</footer>'
-    return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Syllable type catalogue and internal assessment</title><link rel="stylesheet" href="' + _href("report.css", asset_urls) + '"></head><body><main>' + body + '</main></body></html>'
+    return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Syllable type catalogue and internal assessment</title><link rel="stylesheet" href="' + _href("report.css", asset_urls) + '"></head><body class="catalogue-home"><main>' + body + '</main></body></html>'
 
 
 def _is_excluded(row):
@@ -419,6 +613,46 @@ def _is_form_unresolved(row):
     return row.get("category") == "assigned" and row.get("form_status") in {None, "unresolved", "candidate_form", "not_assessed"}
 
 
+def _assessment_data(report):
+    confusion = (report or {}).get("confusion") or {}
+    families = confusion.get("family_ids", [])
+    matrix = confusion.get("matrix_mean_row_normalized", [])
+    if len(matrix) != len(families) or any(len(row) != len(families) for row in matrix):
+        raise ValueError('The frozen confusion-matrix dimensions do not match the family index')
+    metrics = (report or {}).get("metrics") or {}
+    yield ("tables/assessment_metrics.csv", ("metric", "mean", "sd", "sd_meaning"),
+              ({"metric": key, "mean": metrics[key].get("mean"), "sd": metrics[key].get("sd"),
+                "sd_meaning": "Sample SD across the five grouped partitions; not a confidence interval"}
+               for key in ("balanced_accuracy", "macro_f1") if key in metrics))
+    yield ("tables/assessment_support.csv", SUPPORT_FIELDS, (report or {}).get("support", []))
+    yield ("tables/assessment_per_family.csv", ("family_id", "n", "recall_mean", "recall_sd", "per_repeat_recall"), (report or {}).get("per_family", []))
+    repeats = (report or {}).get("repeats", [])
+    yield ("tables/assessment_repeats.csv", ("repeat", "seed", "n", "balanced_accuracy", "macro_f1"), repeats)
+    predictions = ({"repeat": repeat.get("repeat"), "seed": repeat.get("seed"), **pred} for repeat in repeats for pred in repeat.get("predictions", []))
+    yield ("tables/assessment_predictions.csv", ("repeat", "seed", "item_id", "source_group_id", "true_family_id", "predicted_family_id", "fold"), predictions)
+    yield ("tables/assessment_confusion.csv", ("actual_family_id", "predicted_family_id", "mean_row_normalized_rate"),
+              ({"actual_family_id": a, "predicted_family_id": b, "mean_row_normalized_rate": matrix[i][j]}
+               for i, a in enumerate(families) for j, b in enumerate(families)))
+
+
+def assessment_tables(assessment, report):
+    """Yield the six D3 tables with the same names, values and identities for either export."""
+    identity = {"assessment_job_id": assessment.get("job_id"),
+                "assessment_status": assessment.get("status", "not_started"),
+                "stale_for_current": bool(assessment.get("stale_for_current")),
+                "assessment_snapshot_fingerprint": assessment.get("snapshot_fingerprint")}
+    names = assessment.get("family_display_names", {})
+
+    def with_names(rows, id_columns):
+        for row in rows:
+            labels = {field[:-2] + "name": names.get(row.get(field), "") for field in id_columns}
+            yield {**identity, **row, **labels}
+
+    for name, fields, rows in _assessment_data(report):
+        ids = [field for field in fields if field.endswith("family_id")]
+        yield name, (*ASSESSMENT_ID_FIELDS, *fields, *(field[:-2] + "name" for field in ids)), with_names(rows, ids)
+
+
 def write_catalogue_report(output_dir, document):
     'Write controlled filenames; do not create a ZIP, read audio or modify workspace state.'
     document = localize_system_document(document)
@@ -430,11 +664,6 @@ def write_catalogue_report(output_dir, document):
     items = _item_rows(document)
     scoped = [r for r in items if r.get("in_scope") is True]
     assessment, report = _assessment(document)
-    confusion = (report or {}).get("confusion") or {}
-    families = confusion.get("family_ids", [])
-    matrix = confusion.get("matrix_mean_row_normalized", [])
-    if len(matrix) != len(families) or any(len(row) != len(families) for row in matrix):
-        raise ValueError('The frozen confusion-matrix dimensions do not match the family index')
     outputs = []
     def write_text(name, value):
         path = output / name
@@ -443,12 +672,6 @@ def write_catalogue_report(output_dir, document):
             stream.write(value)
         outputs.append(name)
     def write_csv(name, fields, rows):
-        if name.startswith("tables/assessment_"):
-            fields = (*ASSESSMENT_ID_FIELDS, *fields)
-            identity = {"assessment_job_id": assessment.get("job_id"), "assessment_status": assessment.get("status", "not_started"),
-                        "stale_for_current": bool(assessment.get("stale_for_current")),
-                        "assessment_snapshot_fingerprint": assessment.get("snapshot_fingerprint")}
-            rows = ({**identity, **row} for row in rows)
         path = output / name
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("x", encoding="utf-8-sig", newline="") as stream:
@@ -459,7 +682,7 @@ def write_catalogue_report(output_dir, document):
         outputs.append(name)
     write_text("catalogue.json", document_json)
     write_text("report.html", readable)
-    write_text("report.css", CSS + "\n")
+    write_text("report.css", CSS + CATALOGUE_CSS + "\n")
     write_csv("tables/types.csv", TYPE_FIELDS, _type_rows(document))
     write_csv("tables/items.csv", ITEM_FIELDS, items)
     write_csv("tables/scope_items.csv", ITEM_FIELDS, scoped)
@@ -469,20 +692,8 @@ def write_catalogue_report(output_dir, document):
     write_csv("tables/unfinished.csv", ITEM_FIELDS, [r for r in scoped if _is_unfinished(r)])
     write_csv("tables/sources.csv", SOURCE_FIELDS, _source_rows(document))
     write_csv("tables/examples.csv", MEDIA_FIELDS, _media_rows(document))
-    metrics = (report or {}).get("metrics") or {}
-    write_csv("tables/assessment_metrics.csv", ("metric", "mean", "sd", "sd_meaning"),
-              ({"metric": key, "mean": metrics[key].get("mean"), "sd": metrics[key].get("sd"),
-                "sd_meaning": "Sample SD across the five grouped partitions; not a confidence interval"}
-               for key in ("balanced_accuracy", "macro_f1") if key in metrics))
-    write_csv("tables/assessment_support.csv", SUPPORT_FIELDS, (report or {}).get("support", []))
-    write_csv("tables/assessment_per_family.csv", ("family_id", "n", "recall_mean", "recall_sd", "per_repeat_recall"), (report or {}).get("per_family", []))
-    repeats = (report or {}).get("repeats", [])
-    write_csv("tables/assessment_repeats.csv", ("repeat", "seed", "n", "balanced_accuracy", "macro_f1"), repeats)
-    predictions = [{"repeat": repeat.get("repeat"), "seed": repeat.get("seed"), **pred} for repeat in repeats for pred in repeat.get("predictions", [])]
-    write_csv("tables/assessment_predictions.csv", ("repeat", "seed", "item_id", "source_group_id", "true_family_id", "predicted_family_id", "fold"), predictions)
-    write_csv("tables/assessment_confusion.csv", ("actual_family_id", "predicted_family_id", "mean_row_normalized_rate"),
-              ({"actual_family_id": a, "predicted_family_id": b, "mean_row_normalized_rate": matrix[i][j]}
-               for i, a in enumerate(families) for j, b in enumerate(families)))
+    for name, fields, records in assessment_tables(assessment, report):
+        write_csv(name, fields, records)
     assessment_meta = {key: copy.deepcopy(assessment.get(key)) for key in ("job_id", "status", "stale_for_current", "stale_reasons", "snapshot_fingerprint", "report_path")}
     write_text("assessment_status.json", _json(assessment_meta) + "\n")
     readme = f'''# Syllable type catalogue and internal assessment package
@@ -491,14 +702,14 @@ Export ID: {document.get("export_id", 'Not recorded')}
 Delivery status: {_status(document.get("mode", "draft"))}  
 Snapshot fingerprint: {document.get("snapshot_fingerprint", 'Not recorded')}
 
-After extraction, open report.html. No network connection is required. A browser can print it to PDF, but PDF does not embed audio. Keep the complete directory and relative paths; do not move the HTML alone.
+After extraction, open report.html. Use its family index to jump to diagnostic criteria, spectrograms and playable representative syllables. No network connection is required. A browser can print it to PDF, but PDF does not embed audio. Keep the complete directory and relative paths; do not move the HTML alone.
 
 ## Files
 
 - catalogue.json: authoritative original-value snapshot of scope, catalogue and members, sources, human completion and the selected internal assessment. No statistics are recomputed.
 - report.html and report.css: readable catalogue, local styling, human examples, scope, dispositions and assessment. Missing definitions, unknown forms and not-estimable results are retained.
 - tables/types.csv: all families and leaves, with task_member_count and scope_member_count in separate columns.
-- tables/items.csv: all task syllables; in_scope identifies this delivery scope. tables/scope_items.csv contains only the selected scope. disposition_reason retains the original batch disposition note; reason_code is the operator-selected reason category, and reason_code_label is its display label. A category is not free-text evidence of listening and is never inserted into notes. reason_source describes only the batch disposition reason: operator_note means an operator note, operator_code an operator-selected category, and not_provided no note supplied. submission_contract_version is the saved submission contract. Legacy records without these fields remain blank; listening or new provenance is not inferred. axes_reason is current valid three-axis reasoning; reason is the compatibility main reason, preferring current axes_reason without replacing separate columns.
+- tables/items.csv: all task syllables; in_scope identifies this delivery scope; family_name and leaf_name accompany the stable type IDs. tables/scope_items.csv contains only the selected scope. disposition_reason retains the original batch disposition note; reason_code is the operator-selected reason category, and reason_code_label is its display label. A category is not free-text evidence of listening and is never inserted into notes. reason_source describes only the batch disposition reason: operator_note means an operator note, operator_code an operator-selected category, and not_provided no note supplied. submission_contract_version is the saved submission contract. Legacy records without these fields remain blank; listening or new provenance is not inferred. axes_reason is current valid three-axis reasoning; reason is the compatibility main reason, preferring current axes_reason without replacing separate columns.
 - tables/unresolved.csv, excluded.csv and unfinished.csv: in-scope family-unresolved, excluded and unfinished items, following category unresolved/excluded/unreviewed. tables/form_unresolved.csv separately lists assigned items with unresolved or unjudged form; they retain family membership and must not be added again to mutually exclusive disposition totals.
 - tables/sources.csv: declared original recordings and evidence, retaining unknowns. Grouping does not prove individual-bird independence.
 - tables/examples.csv: each type × syllable × example-role registration and media path. A syllable may have several roles while its media is stored once.

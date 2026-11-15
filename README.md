@@ -8,10 +8,10 @@ These ten syllables come from recordings of Eurasian tree sparrows (*Passer mont
 
 ## Install on Windows x64
 
-Open the [Syllafolio v1.0.3 Windows release](https://github.com/linlin0329/Syllafolio/releases/tag/v1.0.3). Download **Syllafolio-Setup-1.0.3-x64.exe** and compare its SHA-256 with the entry in **SHA256SUMS.txt**.
+Open the [Syllafolio v1.0.4 Windows release](https://github.com/linlin0329/Syllafolio/releases/tag/v1.0.4). Download **Syllafolio-Setup-1.0.4-x64.exe** and compare its SHA-256 with the entry in **SHA256SUMS.txt**.
 
 ```powershell
-Get-FileHash -Algorithm SHA256 .\Syllafolio-Setup-1.0.3-x64.exe
+Get-FileHash -Algorithm SHA256 .\Syllafolio-Setup-1.0.4-x64.exe
 ```
 
 Double-click the installer and choose **Install**. Open **Syllafolio** from the desktop shortcut or the Start menu. If you prefer to keep the desktop clear, uncheck **Create a desktop shortcut** before installing. The installation is for the current Windows account. You can also download **Syllafolio-Windows-x64.zip**, extract the whole folder and double-click `Start.cmd`.
@@ -36,7 +36,7 @@ syllables.
 2. Select a scope in **Candidate Groups**, **Global pool** or **Family reviews**, then click **Prepare group**.
 3. Use **Play** to hear the page once or **Loop** to repeat it. Click a syllable to listen to it alone, or Ctrl-click several syllables to compare them. **Fit** restores the full page and frequency range.
 4. Select a human family and edit any exceptions. **Save and next** saves the current item and advances. **Save page** submits all eligible pending items on that page.
-5. Choose **Project → Export saved records…** for JSON, or **Workspace → Catalogue delivery** for a catalogue with a manifest and an offline report.
+5. Choose **Project → Export annotation records (JSON)…** for JSON, or **Workspace → Export catalogue** for a catalogue with a manifest and an offline report.
 
 To compare ways to group the imported syllables, right-click **Candidate Groups** and choose **Compare groupings…**. The finer, default and coarser options show the number of groups, the size of the largest group and the share of syllables left in the global pool. Select a group to listen to a sample. Applying an option updates the project's review groups.
 

@@ -10,8 +10,8 @@ import uuid
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
-    QFormLayout, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
-    QScrollArea, QTabWidget, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
+    QFormLayout, QHeaderView, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
+    QScrollArea, QStackedWidget, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget)
 
 from .annotation_assistant_contracts import canonical_hash
@@ -66,6 +66,138 @@ def _items(state, scope_ids):
     return rows
 
 
+_GAP_TITLES = {
+    "SCOPE_REQUIRED": "Declare the review scope",
+    "UNFINISHED_ITEMS": "Review unfinished syllables",
+    "OPEN_REVIEWS": "Finish open reviews",
+    "ACTIVE_JOBS": "Check running tasks",
+    "TYPE_DEFINITIONS": "Review type definitions",
+    "STALE_TYPE_DEFINITIONS": "Update type definitions",
+    "DEFINITION_REVIEW_REQUIRED": "Recheck members against the revised criteria",
+    "BATCH_FIRST_PASS_PENDING": "Finish the first review of candidate groups",
+    "BATCH_POOL_PENDING": "Complete global pool coverage",
+    "BATCH_FAMILY_PENDING": "Finish open family reviews",
+    "BATCH_EXTERNAL_CHANGE": "Recheck changed syllables",
+    "BATCH_REVIEW_OPEN": "Close outstanding review rounds",
+    "BATCH_LEAF_UNASSESSED": "Assess the fine form of assigned syllables",
+}
+
+
+def _gap_rows(state, items):
+    """Map actual completion blockers to the operation that can resolve each one."""
+    final = state.get("final_review", {})
+    batch = state.get("batch_review", {})
+    reviews = batch.get("reviews", {})
+    types = {r["local_type_id"]: r for r in state.get("memberships", [])}
+    cards = state.get("type_cards", {})
+    groups = {g["group_id"]: g for g in (batch.get("organization") or {}).get("groups", [])}
+    stages = final.get("stages", {})
+    def type_label(key):
+        return cards.get(key, {}).get("title") or key
+
+    result = []
+    card_task = None
+    for gap in final.get("gaps", state.get("completion", {}).get("missing", [])):
+        code = gap["code"]
+        location = gap.get("location", {})
+        targets = {}
+        def add(kind, ident, label):
+            targets[kind, ident] = {"kind": kind, "id": ident, "label": label}
+
+        def add_round(rid):
+            review = reviews.get(rid, {})
+            if review and not review.get("archived") and not review.get("closed"):
+                family = review.get("family_id")
+                group = groups.get(review.get("group_id"), {})
+                name = type_label(family) if family else group.get("label") or (
+                    "Global pool" if review.get("stage") == "pool" else rid)
+                add("review", rid, "Open review · " + name)
+
+        if code == "SCOPE_REQUIRED":
+            add("scope", "scope", "Set review scope")
+        elif code == "ACTIVE_JOBS":
+            add("tasks", "tasks", "View running tasks")
+        elif code == "BATCH_FIRST_PASS_PENDING":
+            for key in stages.get("first", {}).get("pending_ids", []):
+                if key in groups:
+                    add("group", key, "Open group · " + (groups[key].get("label") or key))
+            if not targets:  # Previously saved rows changed outside the original round.
+                for key in location.get("item_ids", []):
+                    if key in items:
+                        add("item", key, "Review " + key)
+        elif code in {"TYPE_DEFINITIONS", "STALE_TYPE_DEFINITIONS"}:
+            for key in gap.get("type_ids", []):
+                if key in types:
+                    add("type", key, "Open type card · " + type_label(key))
+        elif code in {"BATCH_FAMILY_PENDING", "BATCH_REVIEW_OPEN"}:
+            for key in gap.get("review_ids", []):
+                add_round(key)
+                # An assignment can still point at its closed source round
+                # while a replacement round or a later fine review needs closure.
+                source = reviews.get(key, {})
+                if source.get("closed"):
+                    if source.get("group_id") in groups:
+                        gid = source["group_id"]
+                        add("group", gid, "Open group · " + (groups[gid].get("label") or gid))
+                    elif source.get("stage") == "pool":
+                        add("pool", "pool", "Open global pool")
+                    else:
+                        for item in state.get("items", []):
+                            if item.get("batch_review_id") == key and item.get("closure_confirmation_required"):
+                                add("fine", item["item_id"], "Open fine review · " + item["item_id"])
+        elif code == "OPEN_REVIEWS":
+            for key in gap.get("issue_ids", []):
+                issue = state.get("issues", {}).get(key, {})
+                rid = issue.get("directed_review_id") or issue.get("directed_parent_review_id")
+                if rid in reviews and not reviews[rid].get("closed") and not reviews[rid].get("archived"):
+                    add_round(rid)
+                else:
+                    for ident in issue.get("target_ids", []):
+                        if ident in items:
+                            add("fine", ident, "Open fine review · " + ident)
+        elif code in {"DEFINITION_REVIEW_REQUIRED", "BATCH_POOL_PENDING"}:
+            # The backend can identify a directed review as the remaining
+            # prerequisite even after the original global pool round closed.
+            for rid in gap.get("review_ids", []):
+                add_round(rid)
+            if not targets:
+                for key in location.get("family_ids", []):
+                    if key in types and (code == "DEFINITION_REVIEW_REQUIRED" or location.get("view") == "final"):
+                        active_id = batch.get("active_family_reviews", {}).get(key)
+                        if reviews.get(active_id, {}).get("directed_issue_id"):
+                            add_round(active_id)
+                        if ("review", active_id) not in targets:
+                            add("directed", key, "Review changed criteria · " + type_label(key))
+            if not targets and code == "DEFINITION_REVIEW_REQUIRED":
+                for key in gap.get("item_ids", []):
+                    if key in items:
+                        add("fine", key, "Open fine review · " + key)
+            if not targets and code == "BATCH_POOL_PENDING":
+                add("pool", "pool", "Open global pool")
+        else:
+            kind = "fine" if code == "BATCH_LEAF_UNASSESSED" else "item"
+            for key in gap.get("item_ids", []):
+                if key in items:
+                    add(kind, key, "Review " + key)
+        message = system_text(gap.get("message", ""))
+        task = {"code": code, "title": _GAP_TITLES.get(code, message),
+                "message": message, "targets": list(targets.values())}
+        if code in {"TYPE_DEFINITIONS", "STALE_TYPE_DEFINITIONS"}:
+            if card_task is not None:
+                # A draft definition can also have outdated membership. Opening
+                # and reviewing the card resolves both reasons in one place.
+                card_task["codes"].append(code)
+                card_task["title"] = _GAP_TITLES["TYPE_DEFINITIONS"]
+                card_task["message"] += "\n" + message
+                seen = {t["id"] for t in card_task["targets"]}
+                card_task["targets"].extend(t for t in task["targets"] if t["id"] not in seen)
+                continue
+            card_task = task
+            card_task["codes"] = [code]
+        result.append(task)
+    return result
+
+
 class FinalReviewController:
     """投影不产生完成标志；四类写动作只传原payload/CAS/幂等键。"""
     def __init__(self, project):
@@ -97,35 +229,14 @@ class FinalReviewController:
             checkpoints = [{"checkpoint_id": key, **{field: row.get(field) for field in ("reason", "created_at")}} for key, row in checkpoints.items()]
         else:
             checkpoints = copy.deepcopy(checkpoints)
-        locations = []
-        all_items = {row["item_id"] for row in rows}
-        type_ids = {row["local_type_id"] for row in state.get("memberships", [])}
-        reviews = state.get("batch_review", {}).get("reviews", {})
-        groups = {row["group_id"] for row in (state.get("batch_review", {}).get("organization") or {}).get("groups", [])}
-        for gap in final.get("gaps", report.get("missing", [])):
-            found = []
-            location = gap.get("location", {})
-            for kind, values, allowed in (
-                ("item", set(gap.get("item_ids", [])) | set(location.get("item_ids", [])), all_items),
-                ("type", set(gap.get("type_ids", [])) | set(gap.get("source_type_ids", [])) | set(location.get("family_ids", [])) | set(location.get("source_type_ids", [])), type_ids),
-                ("review", set(gap.get("review_ids", [])) | set(location.get("review_ids", [])), set(reviews)),
-                ("group", set(gap.get("group_ids", [])) | (set(final.get("stages", {}).get("first", {}).get("pending_ids", [])) if gap["code"] == "BATCH_FIRST_PASS_PENDING" else set()), groups)):
-                found.extend({"kind": kind, "id": value} for value in sorted(values & allowed))
-            for issue_id in set(gap.get("issue_ids", [])) | set(location.get("issue_ids", [])):
-                issue = state.get("issues", {}).get(issue_id, {})
-                if issue.get("directed_review_id") in reviews:
-                    found.append({"kind": "review", "id": issue["directed_review_id"]})
-                else:
-                    found.extend({"kind": "item", "id": value} for value in issue.get("target_ids", []) if value in all_items)
-            if gap["code"] == "BATCH_POOL_PENDING":
-                found.extend({"kind": "review", "id": value} for value in final.get("stages", {}).get("pool", {}).get("pending_ids", []) if value in reviews)
-            if gap["code"] == "BATCH_FIRST_PASS_PENDING":
-                active_reviews = state.get("batch_review", {}).get("active_reviews", {})
-                found.extend({"kind": "review", "id": active_reviews[group_id]}
-                    for group_id in final.get("stages", {}).get("first", {}).get("pending_ids", [])
-                    if active_reviews.get(group_id) in reviews)
-            locations.append({"code": gap["code"], "message": system_text(gap.get("message", "")),
-                              "targets": [dict(kind=kind, id=ident) for kind, ident in sorted({(row["kind"], row["id"]) for row in found})]})
+        locations = _gap_rows(state, {row["item_id"] for row in rows})
+        outcome_counts = dict.fromkeys(("assigned", "reviewed_unresolved", "excluded", "unfinished"), 0)
+        for row in rows:
+            if row["in_scope"]:
+                outcome = ("unfinished" if row["processing_state"] == "unfinished" else
+                           "excluded" if row["disposition"] == "discard" else
+                           "assigned" if row["family_ids"] else "reviewed_unresolved")
+                outcome_counts[outcome] += 1
         reports = [{"kind": kind, "job_id": row["job_id"], "status": row["status"],
                     "stale_for_current": bool(row.get("stale_for_current", False)), "stale_reasons": copy.deepcopy(row.get("stale_reasons", []))}
                    for kind, section in (("assessment", final.get("assessment", {})), ("catalogue_export", final.get("publication_report", {})))
@@ -134,6 +245,7 @@ class FinalReviewController:
                 "scope": copy.deepcopy(state.get("catalogue_scope")), "scope_declared": state.get("catalogue_scope") is not None,
                 "completion": report, "current_completion_id": state.get("current_completion_id"),
                 "stages": copy.deepcopy(final.get("stages", {})), "gaps": locations, "items": rows,
+                "outcome_counts": outcome_counts,
                 "display_categories": {key: sum(row["in_scope"] and row["category"] == key for row in rows) for key in
                     ("unfinished", "reviewed_unresolved", "excluded", "family_known_form_unresolved", "decided")},
                 "checkpoints": checkpoints, "reports": reports,
@@ -147,11 +259,10 @@ class FinalReviewController:
 
     def resolve_location(self, kind, ident, state=None):
         state = self.project.snapshot() if state is None else state
-        allowed = {"item": {row["item_id"] for row in state["items"]},
-                   "type": {row["local_type_id"] for row in state["memberships"]},
-                   "review": set(state.get("batch_review", {}).get("reviews", {})),
-                   "group": {row["group_id"] for row in (state.get("batch_review", {}).get("organization") or {}).get("groups", [])}}
-        _require(kind in allowed and ident in allowed[kind], "FINAL_LOCATION_SCOPE", "The referenced target is not in the current project")
+        gaps = _gap_rows(state, {r["item_id"] for r in state["items"]})
+        _require(any(target["kind"] == kind and target["id"] == ident
+                     for gap in gaps for target in gap["targets"]),
+                 "FINAL_LOCATION_SCOPE", "This task is no longer outstanding. Refresh the final checks.")
         return {"kind": kind, "id": ident}
 
     def _execute(self, action, payload, *, ticket=None, idempotency_key=None):
@@ -266,344 +377,706 @@ def _table(headers):
 
 
 class FinalReviewDialog(QDialog):
-    itemRequested = Signal(str)
-    typeRequested = Signal(str)
-    groupRequested = Signal(str)
-    reviewRequested = Signal(str)
+    locationRequested = Signal(dict)
+    assessmentRequested = Signal()
     changed = Signal(object)
 
-    def __init__(self, owner):
+    _scope_fields = {
+        "purpose": ("Purpose", "Document the syllable types in this scope."),
+        "coverage_plan": ("Coverage", "Review each syllable in the declared scope."),
+        "quality_requirements": ("Quality criteria", "Check the review coverage, type definitions and examples."),
+        "unresolved_policy": ("Unresolved items", "Keep reviewed but unresolved items and record their reasons."),
+        "exclusions_policy": ("Exclusions", "Retain excluded items with their reasons."),
+    }
+    _evidence_labels = {
+        "quality_evidence": "Checks performed",
+        "unresolved_summary": "Reviewed uncertainties",
+        "exclusions_summary": "Exclusions",
+        "limitations": "Limitations",
+    }
+    _check_labels = {
+        "coverage_confirmed": "I checked coverage of the declared scope.",
+        "type_definitions_reviewed": "I reviewed the relevant type definitions.",
+        "quality_checks_passed": "I confirm the stated quality checks passed.",
+        "unresolved_reported": "I have accounted for unresolved items.",
+        "exclusions_reported": "I have accounted for exclusions.",
+    }
+
+    def __init__(self, owner, *, history_only=False):
         super().__init__(owner)
+        self.history_only = history_only
         self.owner, self.project = owner, owner.project
         self.generation = owner._close_coordinator.generation
         self.controller = FinalReviewController(self.project)
-        self.store = _FormDraft(self.project); self.store.load()
+        self.store = None if history_only else _FormDraft(self.project)
+        self._draft_available = bool(self.store and self.store.load())
         self._revision, self._view = None, None
-        self._dirty, self._loading, self._waiting, self._invalid = False, False, False, None
-        self._restore_ticket = None
-        self.setWindowTitle("Final checks, scope and label history")
-        screen = owner.screen(); area = screen.availableGeometry() if screen else None
-        self.resize(min(1080, area.width() - 32) if area else 1080, min(780, area.height() - 64) if area else 780)
-        if area: self.move(area.left() + 8, area.top() + 8)
+        self._dirty = self._loading = self._waiting = False
+        self._scope_modified = False
+        self._invalid = self._restore_ticket = None
+        self._auto_summaries = {}
+        self.setWindowTitle("Checkpoints and history" if history_only else "Final checks")
+        area = owner.screen().availableGeometry() if owner.screen() else None
+        self.resize(min(850, area.width() - 32) if area else 850,
+                    min(620, area.height() - 64) if area else 620)
         layout = QVBoxLayout(self)
-        self.status = QLabel(); self.status.setWordWrap(True); layout.addWidget(self.status)
-        self.tabs = QTabWidget(); self.tabs.setUsesScrollButtons(True); self.tabs.setElideMode(Qt.TextElideMode.ElideRight)
-        self.tabs.tabBar().setMinimumWidth(0); layout.addWidget(self.tabs, 1)
-        self._build_scope(); self._build_completion(); self._build_history()
-        self.message = QLabel(self.store.warning or "No completion is inferred from a page, group, draft or checkpoint. The shared service decides current completeness.")
-        self.message.setWordWrap(True); layout.addWidget(self.message)
-        self.footer_layout = QGridLayout(); self._footer_columns = None
-        self.save_button = QPushButton("Save draft"); self.save_button.clicked.connect(lambda: self._guard(self.save_draft))
-        self.restore_draft_button = QPushButton("Restore draft"); self.restore_draft_button.clicked.connect(lambda: self._guard(self.restore_draft))
-        refresh = QPushButton("Refresh"); refresh.clicked.connect(lambda: self._guard(lambda: self.refresh(force=True)))
-        close = QPushButton("Close"); close.clicked.connect(self.reject)
-        self.footer_buttons = (self.save_button, self.restore_draft_button, refresh, close)
-        layout.addLayout(self.footer_layout); self._layout_footer()
-        self.timer = QTimer(self); self.timer.setInterval(350); self.timer.timeout.connect(lambda: self._guard(self.refresh))
+        self.pages = QStackedWidget()
+        layout.addWidget(self.pages, 1)
+        if history_only:
+            self._build_history()
+        else:
+            self._build_overview()
+            self._build_scope()
+            self._build_completion()
+        self.message = QLabel()
+        self.message.setWordWrap(True)
+        self.message.setVisible(False)
+        layout.addWidget(self.message)
+        self.close_button = QPushButton("Close")
+        self.close_button.clicked.connect(self.reject)
+        footer = QHBoxLayout()
+        if not history_only:
+            self.restore_draft_button = QPushButton("Restore form draft…")
+            self.restore_draft_button.clicked.connect(lambda: self._guard(self.restore_draft))
+            footer.addWidget(self.restore_draft_button)
+        footer.addStretch()
+        if not history_only:
+            footer.addWidget(self.begin_button)
+            self.assessment_button = QPushButton("Open internal assessment")
+            self.assessment_button.setObjectName("finalOpenAssessment")
+            self.assessment_button.clicked.connect(lambda: self.assessmentRequested.emit())
+            footer.addWidget(self.assessment_button)
+        footer.addWidget(self.close_button)
+        layout.addLayout(footer)
+        self.timer = QTimer(self)
+        self.timer.setInterval(350)
+        self.timer.timeout.connect(lambda: self._guard(self.refresh))
         self.finished.connect(lambda _result: self.timer.stop())
-        if hasattr(getattr(owner, "operationFailed", None), "connect"): owner.operationFailed.connect(self._operation_failed)
-        self.refresh(force=True); self.load_current_scope()
+        owner.operationFailed.connect(self._operation_failed)
+        self.refresh(force=True)
+        if self.store and self.store.warning:
+            self._notice(self.store.warning)
+
+    @staticmethod
+    def _heading(text):
+        label = QLabel(text)
+        font = label.font()
+        font.setBold(True)
+        label.setFont(font)
+        return label
 
     def _page(self, name):
-        page = QWidget(); layout = QVBoxLayout(page)
-        scroll = QScrollArea(); scroll.setWidgetResizable(True)
-        body = QWidget(); inner = QVBoxLayout(body); scroll.setWidget(body)
-        layout.addWidget(scroll, 1); self.tabs.addTab(page, name)
-        return layout, inner
+        page = QWidget()
+        page.setObjectName(name)
+        outer = QVBoxLayout(page)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        body = QWidget()
+        inner = QVBoxLayout(body)
+        scroll.setWidget(body)
+        outer.addWidget(scroll, 1)
+        self.pages.addWidget(page)
+        return page, outer, inner
+
+    def _build_overview(self):
+        self.overview_page = QWidget()
+        self.overview_page.setObjectName("finalOverview")
+        self.pages.addWidget(self.overview_page)
+        layout = QVBoxLayout(self.overview_page)
+        scope_header = QHBoxLayout()
+        scope_header.addWidget(self._heading("Review scope"))
+        scope_header.addStretch()
+        self.edit_scope_button = QPushButton("Edit scope…")
+        self.edit_scope_button.setObjectName("finalEditScope")
+        self.edit_scope_button.clicked.connect(self.show_scope)
+        scope_header.addWidget(self.edit_scope_button)
+        layout.addLayout(scope_header)
+        self.saved_scope = QLabel()
+        self.saved_scope.setWordWrap(True)
+        self.saved_scope.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(self.saved_scope)
+        self.outcomes = QLabel()
+        self.outcomes.setWordWrap(True)
+        layout.addWidget(self.outcomes)
+        layout.addSpacing(10)
+        self.todo_heading = self._heading("Items to resolve")
+        layout.addWidget(self.todo_heading)
+        self.gaps = QTreeWidget()
+        self.gaps.setObjectName("finalTasks")
+        self.gaps.setHeaderLabels(["Review task", "Action"])
+        self.gaps.header().setStretchLastSection(False)
+        self.gaps.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.gaps.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.gaps.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.gaps.itemActivated.connect(lambda item, _column: self._guard(lambda: self._activate_task(item)))
+        self.gaps.itemClicked.connect(lambda item, column: self._guard(lambda: self._activate_task(item))
+                                      if item.parent() is not None and column == 1 else None)
+        layout.addWidget(self.gaps, 1)
+        self.ready_message = QLabel()
+        self.ready_message.setWordWrap(True)
+        layout.addWidget(self.ready_message, 1, Qt.AlignmentFlag.AlignTop)
+        self.begin_button = QPushButton("Confirm completion…")
+        self.begin_button.setObjectName("finalBeginConfirmation")
+        self.begin_button.clicked.connect(lambda: self._guard(self.show_confirmation))
+
+    def _back_button(self, layout):
+        button = QPushButton("Back to overview")
+        button.clicked.connect(self.show_overview)
+        layout.addWidget(button)
 
     def _build_scope(self):
-        layout, inner = self._page("Scope declaration")
-        form = QFormLayout(); inner.addLayout(form)
-        self.scope_mode = QComboBox(); self.scope_mode.addItem("Choose explicitly…", CHOOSE)
-        self.scope_mode.addItem("All task members", "all"); self.scope_mode.addItem("Explicit local subset", "local")
+        self.scope_page, layout, inner = self._page("finalScopePage")
+        inner.addWidget(self._heading("Review scope"))
+        form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        self.scope_mode = QComboBox()
+        self.scope_mode.addItem("All project syllables", "all")
+        self.scope_mode.addItem("Selected syllables", "local")
+        self.level = QComboBox()
+        self.level.addItem("Family", "family")
+        self.level.addItem("Leaf / fine form", "leaf")
+        form.addRow("Syllables", self.scope_mode)
+        form.addRow("Target level", self.level)
         self.scope_mode.currentIndexChanged.connect(self._scope_changed)
-        self.level = QComboBox(); self.level.addItem("Choose explicitly…", CHOOSE)
-        self.level.addItem("Family", "family"); self.level.addItem("Leaf / fine form", "leaf")
         self.level.currentIndexChanged.connect(self._scope_changed)
-        form.addRow("Scope", self.scope_mode); form.addRow("Target level", self.level)
-        self.scope_note = QLabel(); self.scope_note.setWordWrap(True); inner.addWidget(self.scope_note)
+        inner.addLayout(form)
+        self.scope_items = _table(["Include", "Syllable", "Review state"])
+        self.scope_items.setMinimumHeight(140)
+        self.scope_items.horizontalHeader().setStretchLastSection(True)
+        self.scope_items.itemChanged.connect(self._scope_changed)
+        form.addRow(self.scope_items)
         self.scope_texts = {}
-        for key in SCOPE_TEXTS:
-            edit = QPlainTextEdit(); edit.setMaximumHeight(76); edit.setObjectName("finalScope_" + key)
-            edit.textChanged.connect(self._scope_changed); self.scope_texts[key] = edit; form.addRow(key.replace("_", " "), edit)
-        self.scope_items = _table(["Include locally", "Stable item ID", "Processing", "Family", "Form / disposition"])
-        self.scope_items.setMinimumHeight(180); self.scope_items.itemChanged.connect(self._scope_changed)
-        inner.addWidget(self.scope_items)
-        self.load_scope_button = QPushButton("Load current saved declaration"); self.load_scope_button.clicked.connect(lambda: self._guard(self.load_current_scope))
-        inner.addWidget(self.load_scope_button)
-        self.scope_button = QPushButton("Declare this scope"); self.scope_button.clicked.connect(lambda: self._guard(self.declare_scope))
-        layout.addWidget(self.scope_button)
+        self.policy_summary = QLabel()
+        self.policy_summary.setWordWrap(True)
+        self.policy_summary.setTextFormat(Qt.TextFormat.PlainText)
+        inner.addWidget(self.policy_summary)
+        self.policy_toggle = QPushButton("Edit review policies…")
+        self.policy_toggle.setCheckable(True)
+        inner.addWidget(self.policy_toggle, 0, Qt.AlignmentFlag.AlignLeft)
+        self.policy_panel = QWidget()
+        policy_form = QFormLayout(self.policy_panel)
+        policy_form.setContentsMargins(0, 0, 0, 0)
+        inner.addWidget(self.policy_panel)
+        self.policy_panel.hide()
+        self.policy_toggle.toggled.connect(self._toggle_policies)
+        for key, (label, default) in self._scope_fields.items():
+            edit = QPlainTextEdit(default)
+            edit.setObjectName("finalScope_" + key)
+            edit.setFixedHeight(55)
+            edit.textChanged.connect(self._scope_changed)
+            self.scope_texts[key] = edit
+            (form if key == "purpose" else policy_form).addRow(label, edit)
+        inner.addStretch(1)
+        row = QHBoxLayout()
+        self._back_button(row)
+        self.reset_scope_button = QPushButton("Reset edits")
+        self.reset_scope_button.clicked.connect(self._reset_scope)
+        row.addWidget(self.reset_scope_button)
+        row.addStretch()
+        self.scope_button = QPushButton("Declare scope")
+        self.scope_button.setObjectName("finalDeclareScope")
+        self.scope_button.clicked.connect(lambda: self._guard(self.declare_scope))
+        row.addWidget(self.scope_button)
+        layout.addLayout(row)
+
+    def _toggle_policies(self, expanded):
+        self.policy_panel.setVisible(expanded)
+        self.policy_summary.setVisible(not expanded)
+        self.policy_toggle.setText("Hide policy editor" if expanded else "Edit review policies…")
+        self._refresh_policy_summary()
+
+    def _refresh_policy_summary(self):
+        self.policy_summary.setText("\n".join(
+            f"{label}: {self.scope_texts[key].toPlainText().strip()}"
+            for key, (label, _) in self._scope_fields.items() if key != "purpose"))
 
     def _build_completion(self):
-        layout, inner = self._page("Final gaps & completion")
-        self.saved_scope = QLabel(); self.saved_scope.setWordWrap(True); inner.addWidget(self.saved_scope)
-        self.gaps = QTreeWidget(); self.gaps.setHeaderLabels(["Gap / target", "Current service explanation"])
-        self.gaps.setMinimumHeight(180); self.gaps.itemDoubleClicked.connect(lambda item, _column: self._guard(lambda: self._open_location(item)))
-        inner.addWidget(self.gaps)
-        form = QFormLayout(); inner.addLayout(form)
+        self.confirmation_page, layout, inner = self._page("finalCompletionPage")
+        inner.addWidget(self._heading("Confirm completion"))
+        self.confirm_scope = QLabel()
+        self.confirm_scope.setWordWrap(True)
+        inner.addWidget(self.confirm_scope)
+        form = QFormLayout()
         self.completion_texts = {}
-        for key in COMPLETION_TEXTS:
-            edit = QPlainTextEdit(); edit.setMaximumHeight(76); edit.setObjectName("finalEvidence_" + key)
-            edit.textChanged.connect(self._changed); self.completion_texts[key] = edit; form.addRow(key.replace("_", " "), edit)
+        for key, label in self._evidence_labels.items():
+            edit = QPlainTextEdit()
+            edit.setFixedHeight(54)
+            edit.setObjectName("finalEvidence_" + key)
+            edit.setPlaceholderText({"quality_evidence": "Which checks did you perform?",
+                "limitations": "Describe any limitations, or enter None if none apply."}.get(key, ""))
+            edit.textChanged.connect(self._evidence_changed)
+            self.completion_texts[key] = edit
+            form.addRow(label, edit)
+        inner.addLayout(form)
         self.checks = {}
-        for key in sorted(COMPLETION_CHECKS):
-            check = QCheckBox(key.replace("_", " ")); check.toggled.connect(self._changed); check.toggled.connect(self._buttons)
-            self.checks[key] = check; form.addRow(check)
-        note = QLabel("These five confirmations concern only the declared current scope and limits. They do not certify biological truth, annotation accuracy or scientific validity.")
-        note.setWordWrap(True); inner.addWidget(note)
-        self.complete_button = QPushButton("Confirm scoped completion")
-        self.complete_button.clicked.connect(lambda: self._guard(self.complete)); layout.addWidget(self.complete_button)
+        for key, label in self._check_labels.items():
+            check = QCheckBox(label)
+            check.setObjectName("finalCheck_" + key)
+            check.toggled.connect(self._buttons)
+            self.checks[key] = check
+            inner.addWidget(check)
+        inner.addStretch()
+        row = QHBoxLayout()
+        self._back_button(row)
+        row.addStretch()
+        self.complete_button = QPushButton("Confirm completion")
+        self.complete_button.setObjectName("finalSubmitCompletion")
+        self.complete_button.clicked.connect(lambda: self._guard(self.complete))
+        row.addWidget(self.complete_button)
+        layout.addLayout(row)
 
     def _build_history(self):
-        layout, inner = self._page("Label checkpoints & history")
-        self.history_tab = layout.parentWidget()
-        self.history_summary = QLabel(); self.history_summary.setWordWrap(True); inner.addWidget(self.history_summary)
-        self.checkpoints = _table(["Checkpoint ID", "Purpose", "Recorded at"]); self.checkpoints.setMinimumHeight(160)
-        self.checkpoints.itemSelectionChanged.connect(self._checkpoint_selected); inner.addWidget(self.checkpoints)
-        row = QHBoxLayout(); self.checkpoint_reason = QLineEdit(); self.checkpoint_reason.setPlaceholderText("Explicit checkpoint purpose")
-        self.checkpoint_reason.textChanged.connect(self._changed); row.addWidget(self.checkpoint_reason)
-        self.checkpoint_button = QPushButton("Save checkpoint"); self.checkpoint_button.clicked.connect(lambda: self._guard(self.save_checkpoint)); row.addWidget(self.checkpoint_button)
+        self.history_page, layout, inner = self._page("finalHistoryPage")
+        inner.addWidget(self._heading("Label checkpoints"))
+        self.history_summary = QLabel()
+        self.history_summary.setWordWrap(True)
+        inner.addWidget(self.history_summary)
+        self.checkpoints = _table(["Checkpoint ID", "Purpose", "Recorded at"])
+        self.checkpoints.setMinimumHeight(155)
+        self.checkpoints.itemSelectionChanged.connect(self._checkpoint_selected)
+        inner.addWidget(self.checkpoints)
+        row = QHBoxLayout()
+        self.checkpoint_reason = QLineEdit()
+        self.checkpoint_reason.setPlaceholderText("Checkpoint purpose")
+        self.checkpoint_reason.textChanged.connect(self._buttons)
+        row.addWidget(self.checkpoint_reason)
+        self.checkpoint_button = QPushButton("Save checkpoint")
+        self.checkpoint_button.clicked.connect(lambda: self._guard(self.save_checkpoint))
+        row.addWidget(self.checkpoint_button)
         inner.addLayout(row)
-        warning = QLabel("Restoring active labels is separate from restoring this unsubmitted form. Later decision/job history and the latest explicit source mapping are retained; current completion and report applicability are rechecked. Active jobs remain subject to the shared backend guards. The existing service records its fixed explicit-restore reason.")
-        warning.setWordWrap(True); inner.addWidget(warning)
+        warning = QLabel("Restoring a checkpoint replaces the current labels with the selected version. Later decisions, job history and the latest source mapping are retained. Completion and report applicability are checked again.")
+        warning.setWordWrap(True)
+        inner.addWidget(warning)
         self.restore_confirm = QCheckBox("I confirm these restore effects")
-        self.restore_confirm.toggled.connect(self._restore_acknowledged); inner.addWidget(self.restore_confirm)
-        self.report_history = QPlainTextEdit(); self.report_history.setReadOnly(True); self.report_history.setMaximumHeight(150)
-        inner.addWidget(self.report_history)
+        self.restore_confirm.toggled.connect(self._restore_acknowledged)
+        inner.addWidget(self.restore_confirm)
         self.restore_button = QPushButton("Restore label checkpoint")
-        self.restore_button.clicked.connect(lambda: self._guard(self.restore_checkpoint)); layout.addWidget(self.restore_button)
+        self.restore_button.clicked.connect(lambda: self._guard(self.restore_checkpoint))
+        inner.addWidget(self.restore_button)
+        inner.addWidget(self._heading("Report history"))
+        self.report_history = QPlainTextEdit()
+        self.report_history.setReadOnly(True)
+        inner.addWidget(self.report_history)
+
+    def _notice(self, text):
+        self.message.setText(text)
+        self.message.setVisible(bool(text))
 
     def is_current(self):
         return (self.owner.project is self.project and self.owner._close_coordinator.generation == self.generation
                 and self.owner._close_coordinator.state == "open" and self._invalid is None)
 
     def _guard(self, function):
-        try: return function()
+        try:
+            return function()
         except Exception as exc:
-            self.message.setText(f"{getattr(exc, 'code', type(exc).__name__)}: {system_error(exc)}")
-            self.owner._error(exc, operation="scope and label history")
+            self._notice(system_error(exc))
+            self.owner._error(exc, operation=self.windowTitle())
 
     def _operation_failed(self, message):
-        if self._waiting: self._waiting = False; self.message.setText(message)
-
-    def _changed(self, *_args):
-        if not self._loading: self._dirty = True
+        if self._waiting:
+            self._waiting = False
+            self._notice(message)
+            self._buttons()
 
     def _clear_confirmations(self):
-        self._loading = True
-        for check in self.checks.values(): check.setChecked(False)
-        self.restore_confirm.setChecked(False)
-        self._loading = False; self._restore_ticket = None
+        if self.history_only:
+            self._restore_ticket = None
+            self.restore_confirm.setChecked(False)
+        else:
+            for check in self.checks.values():
+                check.setChecked(False)
 
     def _scope_changed(self, *_args):
         if not self._loading:
-            self._changed(); self._clear_confirmations(); self._buttons()
+            if self.scope_mode.currentData() == "local" and self.scope_items.rowCount() == 0:
+                self._loading = True
+                try:
+                    self._populate_subset(set())
+                finally:
+                    self._loading = False
+            self._dirty = self._scope_modified = True
+            self._refresh_policy_summary()
+            self._clear_confirmations()
+            self._buttons()
+
+    def _evidence_changed(self):
+        if not self._loading:
+            self._dirty = True
+            self._clear_confirmations()
+            self._buttons()
 
     def _scope_payload(self):
-        _require(self.scope_mode.currentData() in {"all", "local"}, "SCOPE_REQUIRED", "Explicitly choose the whole task or a local subset")
-        _require(self.level.currentData() in {"family", "leaf"}, "TARGET_LEVEL", "Explicitly choose the target level")
         ids = ([row["item_id"] for row in self._view["items"]] if self.scope_mode.currentData() == "all" else
-               [self.scope_items.item(index, 1).text() for index in range(self.scope_items.rowCount())
-                if self.scope_items.item(index, 0).checkState() == Qt.CheckState.Checked])
+               [self.scope_items.item(i, 1).text() for i in range(self.scope_items.rowCount())
+                if self.scope_items.item(i, 0).checkState() == Qt.CheckState.Checked])
         return {"scope_ids": ids, "target_level": self.level.currentData(),
-                **{key: edit.toPlainText() for key, edit in self.scope_texts.items()}}
+                **{key: edit.toPlainText().strip() for key, edit in self.scope_texts.items()}}
 
     def _scope_matches(self):
-        saved = (self._view or {}).get("scope")
-        if saved is None: return False
-        try: value = self._scope_payload()
-        except FinalReviewError: return False
-        return set(value["scope_ids"]) == set(saved["scope_ids"]) and all(value[key] == saved.get(key) for key in ("target_level", *SCOPE_TEXTS))
+        saved = self._view["scope"]
+        if saved is None:
+            return False
+        if not self._scope_modified:
+            return True
+        value = self._scope_payload()
+        return (set(value["scope_ids"]) == set(saved["scope_ids"]) and
+                all(value[key] == saved.get(key) for key in ("target_level", *SCOPE_TEXTS)))
 
     def _buttons(self, *_args):
-        if not hasattr(self, "complete_button") or self._loading: return
+        if not self._view or self._loading:
+            return
         available = self.is_current() and not self.owner._busy and not self._waiting
-        self.scope_note.setText("Whole task: all frozen task members will be declared; local checkboxes are ignored." if self.scope_mode.currentData() == "all" else
-                                "Local subset: explicitly check the stable IDs to include." if self.scope_mode.currentData() == "local" else "Choose the whole task or an explicit local subset before declaring scope.")
-        self.tabs.setEnabled(available)
-        if hasattr(self, "save_button"):
-            self.save_button.setEnabled(available); self.restore_draft_button.setEnabled(available)
-        self.scope_button.setEnabled(available)
-        self.complete_button.setEnabled(available and bool((self._view or {}).get("completion", {}).get("can_submit"))
-            and self._scope_matches() and all(check.isChecked() for check in self.checks.values()))
-        self.checkpoint_button.setEnabled(available)
-        self.restore_button.setEnabled(available and self._selected_checkpoint() is not None
-            and self.restore_confirm.isChecked() and self._restore_ticket is not None)
+        self.pages.setEnabled(available)
+        self._available = available
+        if self.history_only:
+            self.checkpoint_button.setEnabled(bool(self.checkpoint_reason.text().strip()))
+            self.restore_button.setEnabled(self._selected_checkpoint() is not None and self.restore_confirm.isChecked()
+                                           and self._restore_ticket is not None)
+            return
+        on_scope = self.pages.currentWidget() is self.scope_page
+        self.scope_items.setVisible(self.scope_mode.currentData() == "local")
+        if on_scope:
+            payload = self._scope_payload()
+            self.reset_scope_button.setVisible(self._scope_modified)
+            self.scope_button.setEnabled(bool(payload["scope_ids"]) and all(payload[k] for k in SCOPE_TEXTS)
+                                         and not self._scope_matches())
+        self.restore_draft_button.setVisible(self._draft_available and self.pages.currentWidget() is not self.overview_page)
+        self.restore_draft_button.setEnabled(available)
+        can_confirm = (self._view["scope_declared"] and self._view["completion"].get("can_submit", False)
+                       and not self._view["current_completion_id"] and self._scope_matches())
+        self.begin_button.setVisible(self.pages.currentWidget() is self.overview_page and not self._view["current_completion_id"])
+        self.begin_button.setEnabled(can_confirm and available)
+        self.assessment_button.setVisible(self.pages.currentWidget() is self.overview_page
+                                          and bool(self._view["current_completion_id"]))
+        self.assessment_button.setEnabled(available and self._scope_matches())
+        self.complete_button.setEnabled(can_confirm and self.pages.currentWidget() is self.confirmation_page
+                                       and all(c.isChecked() for c in self.checks.values())
+                                       and all(w.toPlainText().strip() for w in self.completion_texts.values()))
 
     def _selected_checkpoint(self):
-        row = self.checkpoints.currentRow()
-        return self.checkpoints.item(row, 0).text() if row >= 0 and self.checkpoints.item(row, 0) else None
+        rows = self.checkpoints.selectionModel().selectedRows()
+        return self.checkpoints.item(rows[0].row(), 0).text() if rows else None
 
     def _checkpoint_selected(self):
-        if self._loading: return
-        self.restore_confirm.setChecked(False)
-        self._restore_ticket = None; self._buttons()
+        if not self._loading:
+            self.restore_confirm.setChecked(False)
+            self._restore_ticket = None
+            self._buttons()
 
     def _restore_acknowledged(self, checked):
-        if self._loading: return
-        if checked:
-            self._restore_ticket = copy.deepcopy(self._view["ticket"])
-        else: self._restore_ticket = None
+        self._restore_ticket = copy.deepcopy(self._view["ticket"]) if checked else None
         self._buttons()
 
-    def load_current_scope(self):
-        if self._dirty: self.save_draft()
+    def _set_scope_form(self, mode, ids, level, texts):
         self._loading = True
-        saved = (self._view or {}).get("scope")
-        self.scope_mode.setCurrentIndex(0 if saved is None else self.scope_mode.findData("all" if set(saved["scope_ids"]) == {row["item_id"] for row in self._view["items"]} else "local"))
-        self.level.setCurrentIndex(0 if saved is None else self.level.findData(saved["target_level"]))
-        for key, edit in self.scope_texts.items(): edit.setPlainText((saved or {}).get(key, ""))
-        for index in range(self.scope_items.rowCount()):
-            self.scope_items.item(index, 0).setCheckState(Qt.CheckState.Checked if saved and self.scope_items.item(index, 1).text() in saved["scope_ids"] else Qt.CheckState.Unchecked)
-        self._loading = False; self._dirty = False; self._clear_confirmations(); self._buttons()
+        try:
+            self.scope_mode.setCurrentIndex(max(0, self.scope_mode.findData(mode)))
+            self.level.setCurrentIndex(max(0, self.level.findData(level)))
+            for key, edit in self.scope_texts.items():
+                edit.setPlainText(texts[key])
+            self.scope_items.setRowCount(0)
+            if mode == "local":
+                self._populate_subset(set(ids))
+        finally:
+            self._loading = False
+        self._refresh_policy_summary()
+
+    def _populate_subset(self, selected):
+        rows = self._view["items"]
+        self.scope_items.setRowCount(len(rows))
+        for i, row in enumerate(rows):
+            include = QTableWidgetItem()
+            include.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsUserCheckable)
+            include.setCheckState(Qt.CheckState.Checked if row["item_id"] in selected else Qt.CheckState.Unchecked)
+            self.scope_items.setItem(i, 0, include)
+            self.scope_items.setItem(i, 1, QTableWidgetItem(row["item_id"]))
+            self.scope_items.setItem(i, 2, QTableWidgetItem(row["processing_state"].replace("_", " ")))
+
+    def show_scope(self):
+        if self.history_only:
+            return
+        self.pages.setCurrentWidget(self.scope_page)
+        self._clear_confirmations()
+        self._notice("")
+        self._buttons()
+
+    def show_overview(self):
+        if self.history_only:
+            return
+        self.pages.setCurrentWidget(self.overview_page)
+        self._clear_confirmations()
+        if not (self.store and self.store.warning):
+            pending = self._scope_modified and not self._scope_matches()
+            self._notice("Scope edits have not been declared. Open the scope editor to apply or reset them." if pending else "")
+        self._buttons()
+
+    def show_confirmation(self):
+        self.refresh()
+        _require(self.begin_button.isEnabled(), "COMPLETION_MISSING", "Resolve outstanding tasks and save the scope first.")
+        self._clear_confirmations()
+        counts = self._view["outcome_counts"]
+        form_unresolved = sum(row["in_scope"] and bool(row["family_ids"]) and row["form_status"] == "unresolved"
+                              for row in self._view["items"])
+        defaults = {
+            "unresolved_summary": f"Family unresolved: {counts['reviewed_unresolved']}. Assigned family with unresolved fine form: {form_unresolved}.",
+            "exclusions_summary": f"Excluded syllables: {counts['excluded']}.",
+        }
+        self._loading = True
+        for key, text in defaults.items():
+            field = self.completion_texts[key]
+            if not field.toPlainText() or field.toPlainText() == self._auto_summaries.get(key):
+                field.setPlainText(text)
+        self._loading = False
+        self._auto_summaries = defaults
+        self.confirm_scope.setText(self.saved_scope.text())
+        self.pages.setCurrentWidget(self.confirmation_page)
+        self._notice("")
+        self._buttons()
 
     def refresh(self, force=False):
-        if self.owner._busy and not force: self._buttons(); return
-        self._waiting = False
-        if not self.is_current(): self.invalidate("Project changed or is closing; this review form cannot write another owner."); return
-        state = self.owner.state if getattr(self.owner, "state", None) is not None else self.project.snapshot()
+        if not self.is_current():
+            self.invalidate("This project has changed or is closing.")
+            return
+        if self.owner._busy and not force:
+            if getattr(self, "_available", True):
+                self._buttons()
+            return
+        state = self.owner.state if self.owner.state is not None else self.project.snapshot()
+        if not force and self._revision == state["revision"]:
+            if getattr(self, "_available", None) != (not self.owner._busy and not self._waiting):
+                self._buttons()
+            return
         if force or self._revision != state["revision"]:
-            self._revision = state["revision"]; self._view = self.controller.snapshot(state)
-            self.controller.rebase(state); self._clear_confirmations()
-            report, scope = self._view["completion"], self._view["scope"]
-            counts = self._view["display_categories"]
-            self.status.setText(f"Scoped completion: {'recorded' if self._view['current_completion_id'] else 'not confirmed'} · "
-                + (f"Scope {len(report.get('scope_ids', []))}/{len(self._view['items'])}" if self._view["scope_declared"] else "Scope not declared")
-                + f" · Gaps {len(self._view['gaps'])}\nUnfinished {counts['unfinished']} · Reviewed unresolved {counts['reviewed_unresolved']} · "
-                f"Family known / form unresolved {counts['family_known_form_unresolved']} · Excluded {counts['excluded']}")
-            self.status.setToolTip(str(self._view["current_completion_id"] or "No current completion record") + "\nService processing counts: " + str(report.get("counts")))
-            self.saved_scope.setText(("No scope is declared. The service's provisional all-task check is not a saved declaration." if scope is None else
-                f"Saved scope {scope['scope_id']} · {len(scope['scope_ids'])}/{len(self._view['items'])} task members · {scope['target_level']} · Purpose: {scope['purpose']}")
-                + ("\nRecord completeness permits an explicit confirmation." if report.get("can_submit") else "\nCurrent gaps block completion."))
-            selected = {self.scope_items.item(i, 1).text() for i in range(self.scope_items.rowCount()) if self.scope_items.item(i, 0).checkState() == Qt.CheckState.Checked}
-            self._loading = True
-            self.scope_items.setRowCount(len(self._view["items"]))
-            for index, row in enumerate(self._view["items"]):
-                include = QTableWidgetItem(); include.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
-                include.setCheckState(Qt.CheckState.Checked if row["item_id"] in selected else Qt.CheckState.Unchecked)
-                self.scope_items.setItem(index, 0, include)
-                for column, value in enumerate((row["item_id"], row["processing_state"], ", ".join(row["family_ids"]),
-                                                str(row["form_status"]) + " / " + str(row["disposition"])), 1):
-                    self.scope_items.setItem(index, column, QTableWidgetItem(value))
-            self.gaps.clear()
-            for gap in self._view["gaps"]:
-                parent = QTreeWidgetItem([gap["code"], gap["message"]]); parent.setData(0, Qt.ItemDataRole.UserRole, {"code": gap["code"]})
-                self.gaps.addTopLevelItem(parent)
-                for target in gap["targets"]:
-                    child = QTreeWidgetItem([target["kind"] + " · " + target["id"], "Open this actual target"])
-                    child.setData(0, Qt.ItemDataRole.UserRole, target); parent.addChild(child)
-            checkpoint_id = self._selected_checkpoint()
-            self.checkpoints.setRowCount(len(self._view["checkpoints"]))
-            for index, row in enumerate(self._view["checkpoints"]):
-                for column, key in enumerate(("checkpoint_id", "reason", "created_at")):
-                    self.checkpoints.setItem(index, column, QTableWidgetItem(str(row.get(key, ""))))
-                if row["checkpoint_id"] == checkpoint_id: self.checkpoints.selectRow(index)
-            self._loading = False
-            self.history_summary.setText("Later histories and the latest explicit source mapping are retained by label restore.\n" + json.dumps(system_fields(self._view["history"]), ensure_ascii=False))
-            self.report_history.setPlainText(json.dumps(system_fields({"existing_report_applicability": self._view["reports"],
-                "current_completion_id": self._view["current_completion_id"], "active_tasks": self._view["active_tasks"]}), ensure_ascii=False, indent=2))
+            old_scope = self._view["scope"] if self._view else None
+            first = self._view is None
+            self._revision = state["revision"]
+            self._view = self.controller.snapshot(state)
+            self.controller.rebase(state)
+            self._clear_confirmations()
+            if self.history_only:
+                self._refresh_history()
+            else:
+                scope = self._view["scope"]
+                if not self._scope_modified and (first or old_scope != scope):
+                    self._reset_scope()
+                if self.pages.currentWidget() is self.confirmation_page:
+                    self.show_overview()
+                    self._notice("The project changed. Review the current scope before confirming again.")
+                self._refresh_overview()
         self._buttons()
 
-    def _open_location(self, item):
-        _require(self.is_current() and not self.owner._busy, "FINAL_CONTEXT_CHANGED", "Wait for the current project context")
-        data = item.data(0, Qt.ItemDataRole.UserRole) or {}
-        if data.get("code") == "SCOPE_REQUIRED": self.tabs.setCurrentIndex(0); return
-        _require("kind" in data and "id" in data, "FINAL_LOCATION_SCOPE", "Select a concrete missing item, type, group or review")
-        target = self.controller.resolve_location(data["kind"], data["id"])
-        {"item": self.itemRequested, "type": self.typeRequested, "group": self.groupRequested, "review": self.reviewRequested}[target["kind"]].emit(target["id"])
+    def _reset_scope(self):
+        saved = self._view["scope"]
+        if saved:
+            mode = "all" if len(saved["scope_ids"]) == len(self._view["items"]) else "local"
+            self._set_scope_form(mode, saved["scope_ids"], saved["target_level"], saved)
+        else:
+            self._set_scope_form("all", [], "family", {key: pair[1] for key,pair in self._scope_fields.items()})
+        self._scope_modified = False
+        self._clear_confirmations()
+        self._buttons()
 
-    def _run(self, label, function):
-        _require(self.is_current() and not self.owner._busy, "FINAL_CONTEXT_CHANGED", "The current project is not accepting another final-review command")
-        self._waiting = True; self._buttons()
+    def _refresh_overview(self):
+        scope = self._view["scope"]
+        n = len(self._view["items"])
+        if scope:
+            level = "Family level" if scope["target_level"] == "family" else "Leaf / fine form"
+            size = f"All {n} syllables" if len(scope["scope_ids"]) == n else f"{len(scope['scope_ids'])} of {n} syllables"
+            self.saved_scope.setText(f"{size} · {level}\n{scope['purpose']}")
+            self.edit_scope_button.setText("Edit scope…")
+        else:
+            self.saved_scope.setText(f"No scope declared. Suggested scope: all {n} syllables · Family level.")
+            self.edit_scope_button.setText("Set scope…")
+        counts = self._view["outcome_counts"]
+        self.outcomes.setText(f"Assigned {counts['assigned']}   ·   Reviewed unresolved {counts['reviewed_unresolved']}   ·   "
+                              f"Excluded {counts['excluded']}   ·   Unfinished {counts['unfinished']}")
+        expanded = {self.gaps.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole)["code"]
+                    for i in range(self.gaps.topLevelItemCount()) if self.gaps.topLevelItem(i).isExpanded()}
+        gaps = self._view["gaps"]
+        self.gaps.clear()
+        self.todo_heading.setText(f"Items to resolve · {len(gaps)} {'task' if len(gaps) == 1 else 'tasks'}")
+        for gap in gaps:
+            targets = gap["targets"]
+            title = gap.get("title") or gap["message"]
+            item = QTreeWidgetItem([f"{title} ({len(targets)})" if len(targets) > 1 else title, ""])
+            item.setToolTip(0, gap["message"])
+            action = targets[0] if targets else None
+            item.setData(0, Qt.ItemDataRole.UserRole, {"code": gap["code"], "target": action})
+            self.gaps.addTopLevelItem(item)
+            if action is not None:
+                # Only the visible category has a button. Children use the tree's
+                # standard click/keyboard handling even for large review scopes.
+                button = QPushButton(action["label"])
+                button.setMaximumWidth(290)
+                button.setToolTip(action["label"])
+                button.setAccessibleName(title + " — " + action["label"])
+                button.setObjectName("finalOpenTask")
+                button.clicked.connect(lambda _checked=False, item=item: self._guard(lambda: self._activate_task(item)))
+                self.gaps.setItemWidget(item, 1, button)
+            if len(targets) > 1:
+                for target in targets:
+                    child = QTreeWidgetItem([target["id"], target["label"]])
+                    child.setData(0, Qt.ItemDataRole.UserRole, {"code": gap["code"], "target": target})
+                    item.addChild(child)
+                item.setExpanded(gap["code"] in expanded)
+        self.gaps.setVisible(bool(gaps))
+        self.ready_message.setVisible(not gaps)
+        self.ready_message.setText("Completion confirmed for this scope." if self._view["current_completion_id"]
+                                   else "All review tasks for this scope are resolved.")
+
+    def _activate_task(self, item):
+        _require(self.is_current() and not self.owner._busy, "FINAL_CONTEXT_CHANGED", "Wait for the active project.")
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        target = data.get("target")
+        if not target:
+            return
+        checked = self.controller.resolve_location(target["kind"], target["id"])
+        if checked["kind"] == "scope":
+            self.show_scope()
+            return
+        self.locationRequested.emit(dict(checked, gap_code=data["code"]))
+
+    def _refresh_history(self):
+        selected = self._selected_checkpoint()
+        self._loading = True
+        try:
+            checkpoints = self._view["checkpoints"]
+            self.checkpoints.setRowCount(len(checkpoints))
+            for i, row in enumerate(checkpoints):
+                for j, key in enumerate(("checkpoint_id", "reason", "created_at")):
+                    self.checkpoints.setItem(i, j, QTableWidgetItem(str(row.get(key, ""))))
+                if row["checkpoint_id"] == selected:
+                    self.checkpoints.selectRow(i)
+            history = self._view["history"]
+            self.history_summary.setText(f"{len(checkpoints)} saved checkpoints · {history['completion_records']} completion records")
+            self.report_history.setPlainText(json.dumps(system_fields({"label_history": history, "reports": self._view["reports"],
+                "current_completion_id": self._view["current_completion_id"], "active_tasks": self._view["active_tasks"]}),
+                ensure_ascii=False, indent=2))
+        finally:
+            self._loading = False
+
+    def _run(self, label, function, after=None):
+        _require(self.is_current() and not self.owner._busy and not self._waiting,
+                 "FINAL_CONTEXT_CHANGED", "Wait for the active operation before submitting.")
+        self._waiting = True
+        self._buttons()
+
         def done(result):
-            self._waiting = False; self.owner.state = self.project.snapshot(); self.refresh(force=True)
-            self.message.setText("Original receipt replayed; no duplicate command was applied." if result.get("replayed") else
-                "Saved through the shared service. Current completion and report applicability were reread; form drafts remain separate.")
+            self._waiting = False
+            if not self.is_current():
+                return
+            self.owner.state = self.project.snapshot()
+            self.refresh(force=True)
+            if after:
+                after()
+            self._notice(label + " saved.")
             self.changed.emit(result)
-        try: self.owner._run(label, lambda _progress, _cancelled: function(), done)
-        except Exception: self._waiting = False; self._buttons(); raise
+
+        try:
+            self.owner._run(label, lambda _progress, _cancelled: function(), done)
+        except Exception:
+            self._waiting = False
+            self._buttons()
+            raise
 
     def declare_scope(self):
         payload, ticket = self._scope_payload(), copy.deepcopy(self._view["ticket"])
-        self.save_draft(); self._run("Declare review scope", lambda: self.controller.declare_scope(payload, ticket=ticket))
+        self.save_draft()
+
+        def after():
+            self._reset_scope()
+            self.show_overview()
+        self._run("Review scope", lambda: self.controller.declare_scope(payload, ticket=ticket), after)
 
     def complete(self):
-        _require(self._scope_matches(), "SCOPE_CHANGED", "Submit or load the current saved scope before confirming completion")
+        _require(self.pages.currentWidget() is self.confirmation_page and self.complete_button.isEnabled(),
+                 "COMPLETION_MISSING", "Review the current scope, evidence and five confirmations.")
         ticket = copy.deepcopy(self._view["ticket"])
         payload = {"scope_id": ticket["scope_id"], "checks": {key: check.isChecked() for key, check in self.checks.items()},
-                   **{key: edit.toPlainText() for key, edit in self.completion_texts.items()}}
-        self.save_draft(); self._run("Confirm scoped completion", lambda: self.controller.complete(payload, ticket=ticket))
+                   **{key: edit.toPlainText().strip() for key, edit in self.completion_texts.items()}}
+        self.save_draft()
+        self._run("Completion", lambda: self.controller.complete(payload, ticket=ticket), self.show_overview)
 
     def save_checkpoint(self):
         reason, ticket = self.checkpoint_reason.text(), copy.deepcopy(self._view["ticket"])
-        self.save_draft(); self._run("Save label checkpoint", lambda: self.controller.save_checkpoint(reason, ticket=ticket))
+        self._run("Checkpoint", lambda: self.controller.save_checkpoint(reason, ticket=ticket), self.checkpoint_reason.clear)
 
     def restore_checkpoint(self):
         ident, ticket, confirmed = self._selected_checkpoint(), copy.deepcopy(self._restore_ticket), self.restore_confirm.isChecked()
-        _require(confirmed and ticket is not None, "CHECKPOINT_CONFIRMATION", "Review and explicitly confirm the selected checkpoint")
-        self.save_draft()
+        _require(confirmed and ticket is not None, "CHECKPOINT_CONFIRMATION", "Explicitly confirm the selected restore.")
         hook = getattr(self.owner, "before_checkpoint_restore", None)
-        if hook is not None: hook()
-        self._run("Restore label checkpoint", lambda: self.controller.restore_checkpoint(ident, confirmed=confirmed, ticket=ticket))
+        if hook is not None:
+            hook()
+        self._run("Restored checkpoint", lambda: self.controller.restore_checkpoint(ident, confirmed=confirmed, ticket=ticket))
 
     def save_draft(self):
-        # Called after the owner enters draining as well: only local unsubmitted bytes are saved.
-        if self._dirty:
-            selected = [self.scope_items.item(i, 1).text() for i in range(self.scope_items.rowCount()) if self.scope_items.item(i, 0).checkState() == Qt.CheckState.Checked]
+        if self.history_only or not self._dirty:
+            return True
+        selected = []
+        if self.scope_mode.currentData() == "local":
+            selected = self._scope_payload()["scope_ids"]
+        with self.store.lock:
+            old = (self.store.load() or {}).get("form", {})
+            # Preserve legacy checkpoint inputs in pre-existing form drafts.
             form = {"scope_mode": self.scope_mode.currentData(), "scope_ids": selected, "target_level": self.level.currentData(),
-                "scope_texts": {key: edit.toPlainText() for key, edit in self.scope_texts.items()},
-                "completion_texts": {key: edit.toPlainText() for key, edit in self.completion_texts.items()},
-                "checkpoint_reason": self.checkpoint_reason.text(), "selected_checkpoint_id": self._selected_checkpoint()}
-            self.store.save(form, (self._view or {}).get("ticket", self.controller.base_ticket)); self._dirty = False
+                    "scope_texts": {key: edit.toPlainText() for key, edit in self.scope_texts.items()},
+                    "completion_texts": {key: edit.toPlainText() for key, edit in self.completion_texts.items()},
+                    "checkpoint_reason": old.get("checkpoint_reason", ""), "selected_checkpoint_id": old.get("selected_checkpoint_id")}
+            self.store.save(form, (self._view or {}).get("ticket", self.controller.base_ticket))
+        self._dirty = False
+        self._draft_available = True
         return True
 
     def restore_draft(self):
-        _require(self.is_current() and not self.owner._busy, "FINAL_CONTEXT_CHANGED", "Restore this form only in its current open project")
-        value = self.store.load(); _require(value is not None, "FINAL_DRAFT_MISSING", self.store.warning or "No final form draft is stored")
-        form = value["form"]; self._loading = True
-        self.scope_mode.setCurrentIndex(max(0, self.scope_mode.findData(form.get("scope_mode", CHOOSE))))
-        self.level.setCurrentIndex(max(0, self.level.findData(form.get("target_level", CHOOSE))))
-        for key, edit in self.scope_texts.items(): edit.setPlainText(form.get("scope_texts", {}).get(key, ""))
-        for key, edit in self.completion_texts.items(): edit.setPlainText(form.get("completion_texts", {}).get(key, ""))
-        for index in range(self.scope_items.rowCount()): self.scope_items.item(index, 0).setCheckState(Qt.CheckState.Checked if self.scope_items.item(index, 1).text() in form.get("scope_ids", []) else Qt.CheckState.Unchecked)
-        self.checkpoint_reason.setText(form.get("checkpoint_reason", ""))
-        self._loading = False; self._clear_confirmations(); self._dirty = True; self._buttons()
-        self.message.setText("Unsubmitted form restored; every completion/restore confirmation is cleared. Current saved scope and label state remain authoritative.")
+        _require(self.is_current() and not self.owner._busy, "FINAL_CONTEXT_CHANGED", "Wait for the active project.")
+        value = self.store.load()
+        _require(value is not None, "FINAL_DRAFT_MISSING", self.store.warning or "No final-check draft is stored.")
+        form = value["form"]
+        self._set_scope_form(form["scope_mode"], form["scope_ids"], form["target_level"], form["scope_texts"])
+        self._loading = True
+        for key, edit in self.completion_texts.items():
+            edit.setPlainText(form["completion_texts"][key])
+        self._loading = False
+        self._scope_modified = self._dirty = True
+        self._clear_confirmations()
+        if not self._scope_matches():
+            self.pages.setCurrentWidget(self.scope_page)
+        self._buttons()
+        self._notice("Form draft restored. Review it against the saved scope before confirming.")
 
     def invalidate(self, reason):
-        self._invalid = reason; self.timer.stop(); self._clear_confirmations(); self._buttons(); self.message.setText(reason)
+        self._invalid = reason
+        self.timer.stop()
+        self._clear_confirmations()
+        self._buttons()
+        self._notice(reason)
 
-    def stop(self): self.timer.stop()
-    def history_visible(self):
-        return self.tabs.currentWidget() is self.history_tab
-
-    def show_history(self):
-        self.tabs.setCurrentWidget(self.history_tab)
-        self.show()
-        self.raise_()
-
-    def _layout_footer(self):
-        columns = 2 if self.width() < 760 else 4
-        if columns == self._footer_columns: return
-        for button in self.footer_buttons: self.footer_layout.removeWidget(button)
-        for column in range(4): self.footer_layout.setColumnStretch(column, 1 if column < columns else 0)
-        for index, button in enumerate(self.footer_buttons): self.footer_layout.addWidget(button, index // columns, index % columns)
-        self._footer_columns = columns
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if hasattr(self, "footer_buttons"): self._layout_footer()
+    def stop(self):
+        self.timer.stop()
 
     def reject(self):
-        try: self.save_draft()
-        except Exception as exc: self._guard(lambda: (_ for _ in ()).throw(exc)); return
-        self._clear_confirmations(); super().reject()
+        try:
+            self.save_draft()
+        except Exception as exc:
+            self._notice(system_error(exc))
+            return
+        self._clear_confirmations()
+        super().reject()
 
     def closeEvent(self, event):
-        try: self.save_draft()
-        except Exception as exc: event.ignore(); self._guard(lambda: (_ for _ in ()).throw(exc)); return
-        self.timer.stop(); self._clear_confirmations(); super().closeEvent(event)
+        try:
+            self.save_draft()
+        except Exception as exc:
+            event.ignore()
+            self._notice(system_error(exc))
+            return
+        self.stop()
+        self._clear_confirmations()
+        super().closeEvent(event)
 
     def showEvent(self, event):
         super().showEvent(event)
-        if self.is_current(): self.refresh(force=True); self.timer.start()
+        if self.is_current():
+            self.refresh(force=True)
+            self.timer.start()

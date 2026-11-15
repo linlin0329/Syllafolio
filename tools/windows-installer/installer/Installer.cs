@@ -20,9 +20,9 @@ using Microsoft.Win32.SafeHandles;
 
 [assembly: AssemblyTitle("Syllafolio Setup")]
 [assembly: AssemblyProduct("Syllafolio")]
-[assembly: AssemblyVersion("1.0.3.0")]
-[assembly: AssemblyFileVersion("1.0.3.0")]
-[assembly: AssemblyInformationalVersion("1.0.3")]
+[assembly: AssemblyVersion("1.0.4.0")]
+[assembly: AssemblyFileVersion("1.0.4.0")]
+[assembly: AssemblyInformationalVersion("1.0.4")]
 namespace SyllafolioInstaller
 {
     sealed class Failure : Exception

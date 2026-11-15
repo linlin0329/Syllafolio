@@ -20,7 +20,8 @@ from .annotation_english import system_error
 from .annotation_page_layout import LEGACY_PAGE_ITEMS, page_capacity, validate_page_layout
 
 
-def prepare_audition(project, item_ids, gap_seconds, check_cancelled=None, *, page_layout=None):
+def prepare_audition(project, item_ids, gap_seconds, check_cancelled=None, *, page_layout=None,
+                     settings=None, normalization="per_item"):
     """Read the project's actual PCM, retaining the requested order and exact frame boundaries."""
     layout = validate_page_layout(page_layout) if page_layout is not None else None
     capacity = page_capacity(layout) if layout is not None else LEGACY_PAGE_ITEMS
@@ -51,7 +52,8 @@ def prepare_audition(project, item_ids, gap_seconds, check_cancelled=None, *, pa
         folder = Path(temporary)
         audio = folder / "audition.wav"
         sf.write(audio, pcm, rate, subtype="FLOAT")
-        display = render_page_display(audio, slots, folder, check_cancelled=check_cancelled, page_layout=layout)
+        display = render_page_display(audio, slots, folder, settings=settings, normalization=normalization,
+                                      check_cancelled=check_cancelled, page_layout=layout)
         image = (folder / display["spectrogram_path"]).read_bytes()
     page = {"slots": slots, "display": display["display"]}
     if layout is not None:
@@ -80,13 +82,13 @@ class ComparisonAuditionWidget(QWidget):
         self.status = QLabel(self)
         self.status.setTextFormat(Qt.TextFormat.PlainText)
         self.status.setWordWrap(True)
-        controls = QHBoxLayout()
-        controls.addWidget(self.play_button)
-        controls.addWidget(self.stop_button)
-        controls.addWidget(self.status, 1)
+        self.controls = QHBoxLayout()
+        self.controls.addWidget(self.play_button)
+        self.controls.addWidget(self.stop_button)
+        self.controls.addWidget(self.status, 1)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addLayout(controls)
+        layout.addLayout(self.controls)
         layout.addWidget(self.canvas)
         self.player.positionChanged.connect(self.canvas.set_position)
         self.player.playingChanged.connect(self.stop_button.setEnabled)
@@ -95,14 +97,15 @@ class ComparisonAuditionWidget(QWidget):
         self.stop_button.clicked.connect(self.stop)
         self.clear()
 
-    def set_items(self, item_ids, *, page_layout=None):
+    def set_items(self, item_ids, *, page_layout=None, settings=None, normalization="per_item"):
         self.clear()
         if not item_ids:
             return
         self.status.setText("Loading audition…")
         self._cancelled = Event()
         self._future = self._executor.submit(prepare_audition, self.project, tuple(item_ids),
-                                             self.gap_seconds, self._cancelled.is_set, page_layout=page_layout)
+                                             self.gap_seconds, self._cancelled.is_set, page_layout=page_layout,
+                                             settings=settings, normalization=normalization)
         self._timer.start()
 
     def _check_ready(self):
@@ -116,11 +119,14 @@ class ComparisonAuditionWidget(QWidget):
             with BytesIO(image) as stream:
                 self.canvas.set_page(pcm, rate, page, stream, gap_seconds=self.gap_seconds)
             self.player.set_audio(pcm, rate)
-            self.play_button.setEnabled(True)
-            self.status.setText("  ·  ".join(row["item_id"] for row in page["slots"]))
+            self._page_ready(page)
         except Exception as exc:
             self.clear()
             self.status.setText(system_error(exc))
+
+    def _page_ready(self, page):
+        self.play_button.setEnabled(True)
+        self.status.setText("  ·  ".join(row["item_id"] for row in page["slots"]))
 
     def _play(self):
         self.player.play()

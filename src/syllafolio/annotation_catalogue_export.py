@@ -32,6 +32,31 @@ def export_state(state):
     return state.get("catalogue_exports", {"schema_version": SCHEMA, "jobs": {}, "history": []})
 
 
+def _example_roles(type_cards):
+    """One audio/image pair per unique example, including out-of-scope references."""
+    roles = {}
+    for type_id, card in type_cards:
+        for field, role in (("representative_ids", "representative"), ("atypical_ids", "atypical"),
+                            ("counterexample_ids", "counterexample")):
+            for item_id in (card or {}).get(field, []):
+                roles.setdefault(item_id, []).append({"type_id": type_id, "role": role})
+    return roles
+
+
+def _package_inventory(items, cards):
+    examples = sorted(_example_roles(cards))
+    scoped = [row["item_id"] for row in items if row["in_scope"]]
+    scoped_set = set(scoped)
+    return {
+        "all_item_ids": [row["item_id"] for row in items],
+        "scope_item_ids": scoped,
+        "outside_scope_item_ids": [row["item_id"] for row in items if not row["in_scope"]],
+        "example_item_ids": examples,
+        "outside_scope_example_ids": [ident for ident in examples if ident not in scoped_set],
+        "audit_scope": "task-wide",
+    }
+
+
 def apply_export(state, payload):
     'Export lifecycle only; independent of catalogue, human completion and label checkpoints.'
     data = state.setdefault("catalogue_exports", {"schema_version": SCHEMA, "jobs": {}, "history": []})
@@ -293,12 +318,13 @@ class CatalogueExportService:
                 "review_projection": copy.deepcopy(current), "saved_disposition": copy.deepcopy(saved),
                 "raw_recording_id": sources_by_id[ident]["raw_recording_id"],
                 "source_status": sources_by_id[ident]["status"], "source_evidence": sources_by_id[ident]["evidence"]})
-        media_ids = {ident for card in state.get("type_cards", {}).values()
-                     for field in ("representative_ids", "atypical_ids", "counterexample_ids") for ident in card.get(field, [])}
+        cards = state.get("type_cards", {})
+        inventory = _package_inventory(items, ((row["local_type_id"], cards.get(row["local_type_id"]))
+                                                for row in state["memberships"]))
         counts = {"n_task": len(items), "n_scope": len(selected), "n_out_of_scope": len(items) - len(selected),
                   "families": sum(bool(selected & set(row["member_ids"])) for row in families.values()),
                   "leaves": sum(bool(selected & set(row["member_ids"])) for row in leaves.values()),
-                  "catalogue_families": len(families), "catalogue_leaves": len(leaves), "media_examples": len(media_ids)}
+                  "catalogue_families": len(families), "catalogue_leaves": len(leaves), "media_examples": len(inventory["example_item_ids"])}
         counts.update({name: sum(row["in_scope"] and row["category"] == name for row in items)
                        for name in ("assigned", "unresolved", "excluded", "unreviewed")})
         completion_id = state.get("current_completion_id")
@@ -321,7 +347,7 @@ class CatalogueExportService:
         titles = {key: title for key, title in titles.items() if title != key}
         if titles:
             context["family_titles"] = titles
-        return context, {"scope": scope, "counts": counts, "items": items, "source_registry": sources,
+        return context, {"scope": scope, "counts": counts, "inventory": inventory, "items": items, "source_registry": sources,
                          "completion": {"report": report, "record": completion}, "assessment_options": options,
                          "human_completion_current": not human_blocking, "completion_id": completion_id,
                          "human_blocking": human_blocking}
@@ -352,10 +378,11 @@ class CatalogueExportService:
                 "current_fingerprint": fingerprint, "jobs": jobs,
                 "latest_job_id": jobs[-1]["job_id"] if jobs else None,
                 "current_job_id": active[0]["job_id"] if active else None,
-                **{key: copy.deepcopy(preview[key]) for key in ("scope", "counts", "assessment_options", "human_completion_current", "completion_id")}}
+                **{key: copy.deepcopy(preview[key]) for key in ("scope", "counts", "inventory", "assessment_options", "human_completion_current", "completion_id")}}
 
     def _document(self, state, preview, context, mode, job_id, reason, assessment_id):
         from .annotation_final_review import final_review_projection
+        from .annotation_catalogue_report import assessment_family_names
         types = final_review_projection(dict(state, effective_decision_ids=sorted(self._effective_decision_ids(state))), preview["completion"]["report"])["types"]
         scope_ids = set(preview["scope"]["scope_ids"])
         memberships = {row["local_type_id"]: row for row in state["memberships"]}
@@ -376,14 +403,16 @@ class CatalogueExportService:
             if job.get("report_url"):
                 path = self.owner.media_path(job["report_url"].rsplit("/", 1)[1])
                 require(_sha(path) == job["report_sha256"], "ASSESSMENT_CHANGED", 'The internal assessment report file has changed')
-                full_report = json.loads(path.read_text())
+                full_report = json.loads(path.read_bytes())
                 require(full_report["snapshot_fingerprint"] == job["snapshot_fingerprint"] and full_report["result"] == job["report"],
                         "ASSESSMENT_CHANGED", 'The internal assessment report differs from its frozen record')
                 assessment["report_path"] = "assessment.json"
+                assessment["family_display_names"] = assessment_family_names(state, full_report)
+                assessment["report_sha256"] = job["report_sha256"]
         document = {"schema_version": "annotation-catalogue-export-v1", "export_id": job_id, "created_at": utc(),
             "project_identity": self.owner.record_metadata(),
             "mode": mode, "requested_mode": mode, "reason": reason, "snapshot_fingerprint": canonical_hash(context),
-            "scope": preview["scope"], "counts": preview["counts"], "catalogue": catalogue,
+            "scope": preview["scope"], "counts": preview["counts"], "inventory": preview["inventory"], "catalogue": catalogue,
             "items": preview["items"], "source_registry": preview["source_registry"],
             "completion": preview["completion"], "assessment": assessment, "media": [],
             "versions": {"input_fingerprint": self.owner.dataset.input_fingerprint,
@@ -445,6 +474,9 @@ class CatalogueExportService:
                     frozen_context=context, snapshot_fingerprint=canonical_hash(context), document=document, audit=audit,
                     assessment_document=assessment_document,
                     progress={"stage": "queued", "completed_media": 0, "total_media": preview["counts"]["media_examples"]})
+                if assessment_document is not None:
+                    selected = state["label_assessment"]["jobs"][payload["assessment_job_id"]]
+                    record["assessment_report_url"] = selected["report_url"]
                 subaction = "start"
             else:
                 require(set(payload) == {"job_id", "reason"} and isinstance(payload["job_id"], str), "EXPORT_FIELDS", 'Cancellation requires an export ID and a reason')
@@ -493,11 +525,7 @@ class CatalogueExportService:
             require(parent["path"].is_file() and _sha(parent["path"]) == parent["sha256"], "EXPORT_MEDIA_CHANGED", 'The original parent audio has changed; this export cannot continue')
 
     def _write_media(self, document, folder, event, ident):
-        roles = {}
-        for row in document["catalogue"]:
-            for field, role in (("representative_ids", "representative"), ("atypical_ids", "atypical"), ("counterexample_ids", "counterexample")):
-                for item in (row.get("card") or {}).get(field, []):
-                    roles.setdefault(item, []).append({"type_id": row["local_type_id"], "role": role})
+        roles = _example_roles((row["local_type_id"], row.get("card")) for row in document["catalogue"])
         media_dir = folder / "media"; media_dir.mkdir()
         all_rows = {row["item_id"]: row for row in document["items"]}
         media = []
@@ -540,7 +568,11 @@ class CatalogueExportService:
             self._check_cancel(event)
             atomic_json(staging / "audit.json", job["audit"])
             if job["assessment_document"] is not None:
-                atomic_json(staging / "assessment.json", job["assessment_document"])
+                source = self.owner.media_path(job["assessment_report_url"].rsplit("/", 1)[1])
+                raw_report = source.read_bytes()
+                require(hashlib.sha256(raw_report).hexdigest() == document["assessment"]["report_sha256"],
+                        "ASSESSMENT_CHANGED", "The registered assessment report changed before export.")
+                (staging / "assessment.json").write_bytes(raw_report)
             write_catalogue_report(staging, document)
             self._verify_inputs(event)
             self._check_cancel(event)

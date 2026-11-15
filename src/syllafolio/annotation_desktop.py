@@ -223,6 +223,8 @@ class MainWindow(QMainWindow):
         self._display_dialog = None
         self._pool_review_dialog = None
         self._final_review_dialog = None
+        self._checkpoint_dialog = None
+        self._pending_final_item = None
         self._catalogue_review_dialog = None
         self._source_registry_dialog = None
         self._assessment_dialog = None
@@ -295,16 +297,16 @@ class MainWindow(QMainWindow):
         self.interval_import_action = self._menu_action(self.project_menu, "New project from recording and annotations…", "importRecordingAnnotations", self._show_interval_import)
         self.open_button = self._menu_action(self.project_menu, "Open project…", "openProject", self._open_dialog)
         self.backup_button = self._menu_action(self.project_menu, "Back up a project copy…", "backupProject", self._backup_dialog)
-        self.export_button = self._menu_action(self.project_menu, "Export saved records…", "exportRecords", self._export_dialog)
+        self.export_button = self._menu_action(self.project_menu, "Export annotation records (JSON)…", "exportRecords", self._export_dialog)
         self.project_menu.addSeparator()
         self._dialog_menu_actions = {}
         for menu, title, name, dialog_attr, callback in (
             (self.workspace_menu, "Final checks", "finalWorkspace", "_final_review_dialog", self._show_final_review),
-            (self.workspace_menu, "Type definitions and directed review", "catalogueWorkspace", "_catalogue_review_dialog", self._show_catalogue_review),
+            (self.workspace_menu, "Type definitions", "catalogueWorkspace", "_catalogue_review_dialog", self._show_catalogue_review),
             (self.workspace_menu, "Internal assessment", "assessmentWorkspace", "_assessment_dialog", self._show_assessment),
-            (self.workspace_menu, "Catalogue delivery", "catalogueExportWorkspace", "_catalogue_export_dialog", self._show_catalogue_export),
+            (self.workspace_menu, "Export catalogue", "catalogueExportWorkspace", "_catalogue_export_dialog", self._show_catalogue_export),
             (self.project_menu, "Recording sources…", "sourceRegistryWorkspace", "_source_registry_dialog", self._show_source_registry),
-            (self.project_menu, "Checkpoints and history…", "checkpointWorkspace", "_final_review_dialog", self._show_checkpoint_history),
+            (self.project_menu, "Checkpoints and history…", "checkpointWorkspace", "_checkpoint_dialog", self._show_checkpoint_history),
         ):
             action = menu.addAction(title)
             action.setObjectName(name)
@@ -416,6 +418,8 @@ class MainWindow(QMainWindow):
         self.group_list.createFamilyRequested.connect(
             lambda: self._guard(lambda: self._family_dialog(reveal=True), operation="create human family"))
         self.group_list.renameFamilyRequested.connect(self._queue_family_rename)
+        self.group_list.familyDefinitionRequested.connect(
+            lambda family: self._activate_workspace(lambda: self._show_catalogue_review(family)))
         header = self.group_list.header()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
@@ -443,6 +447,12 @@ class MainWindow(QMainWindow):
                                                  lambda: self._prepare_again(use_exception=True))
         scope_actions.addWidget(self.more_button)
         side.addLayout(scope_actions)
+        sidebar_rule = QFrame()
+        sidebar_rule.setFrameShape(QFrame.Shape.HLine)
+        side.addWidget(sidebar_rule)
+        self.final_checks_button = self._button("Final checks…", "sidebarFinalChecks", self._show_final_review)
+        self.final_checks_button.setToolTip("Check the project's declared review scope and outstanding work.")
+        side.addWidget(self.final_checks_button)
         self.main_splitter.addWidget(sidebar)
         right = QWidget()
         work = QVBoxLayout(right)
@@ -685,6 +695,9 @@ class MainWindow(QMainWindow):
         self.page_summary.setWordWrap(True)
         self.page_summary.setToolTip("* = pending save. Save page submits pending outcomes on this page, regardless of playback selection.")
         actions.addWidget(self.page_summary, 1)
+        self.representatives_button = self._button("Add as representative…", "addAuditionRepresentatives",
+                                                   self._stage_selected_representatives)
+        actions.addWidget(self.representatives_button)
         self.save_next = self._button("Save and next", "saveNext", lambda: self.save_selected(True))
         self.save_next.setShortcut(QKeySequence("Ctrl+Return"))
         actions.addWidget(self.save_next)
@@ -864,8 +877,6 @@ class MainWindow(QMainWindow):
             checked = False
             if dialog is not None and dialog.isVisible():
                 checked = action.isChecked() if active is None else active is dialog or dialog.isAncestorOf(active)
-                if checked and dialog is self._final_review_dialog:
-                    checked = (action.objectName() == "checkpointWorkspace") == dialog.history_visible()
             action.setChecked(checked)
 
     def _project_identity_text(self):
@@ -1084,7 +1095,7 @@ class MainWindow(QMainWindow):
             self._status(detail, error=True)
         self.operationFailed.emit(detail)
 
-    def _run(self, label, function, success=None, *, kind="foreground"):
+    def _run(self, label, function, success=None, *, kind="foreground", before_start=None):
         if self._busy or self._close_coordinator.state != "open":
             raise ValueError("Wait for the active operation to finish.")
         self._busy = True
@@ -1113,6 +1124,8 @@ class MainWindow(QMainWindow):
         thread.failed.connect(lambda error: self._task_failed(error, thread=thread, generation=generation))
         thread.succeeded.connect(lambda result: self._task_succeeded(label, result, success,
                                                                      thread=thread, generation=generation))
+        if before_start is not None:
+            before_start(thread)
         thread.finished.connect(lambda: self._worker_finished(thread))
         thread.start()
 
@@ -1214,7 +1227,7 @@ class MainWindow(QMainWindow):
         for widget in (self.group_list, self.slot_list, self.current_family, self.create_family_button,
                        self.compare_groupings_action, self.open_candidate_workspace_action,
                        self.apply_recommendation, self.keep_clusters,
-                       self.export_button):
+                       self.export_button, self.final_checks_button):
             widget.setEnabled(opened and available)
         self.group_list.family_actions_enabled = bool(opened and available and not (self.state or {}).get("deadline_locked"))
         self.create_family_button.setEnabled(self.group_list.family_actions_enabled)
@@ -1264,6 +1277,14 @@ class MainWindow(QMainWindow):
         self.fine_review_button.setEnabled(bool(ready and single and not audition_only and not locked))
         self.review_media_button.setEnabled(bool(ready and single and not audition_only))
         self.item_tools.setEnabled(bool(ready and single and not audition_only))
+        selected = self.selected_item_ids
+        self.representatives_button.setVisible(bool(self._page and selected))
+        if self._page and selected:
+            family, hint = self._representative_target(self.state)
+            self.representatives_button.setEnabled(bool(ready and family))
+            self.representatives_button.setText("Add as representative…" if len(selected) == 1
+                                                else "Add as representatives…")
+            self.representatives_button.setToolTip(hint)
         self.current_family.setEnabled(opened and available and not audition_only and
                                        not (self.selected_group or "").startswith("family:"))
         self._update_scope_actions(opened, available, review)
@@ -1505,12 +1526,13 @@ class MainWindow(QMainWindow):
         tree.setFocus()
         return self
 
-    def _require_workflow_owner(self):
+    def _require_workflow_owner(self, *, stop_audio=True):
         if not self.project or self._busy or self._close_coordinator.state != "open":
             raise ValueError("Open a project and wait for its active operation before opening this workspace.")
         self.state = self._sample_project_state(require_fresh=True)
         self._save_drafts()
-        self._stop_review_audio()
+        if stop_audio:
+            self._stop_review_audio()
 
     def _show_pool_review(self):
         self._require_workflow_owner()
@@ -1532,32 +1554,36 @@ class MainWindow(QMainWindow):
         dialog.show(); dialog.raise_(); dialog.select_scope()
         return dialog
 
-    def _show_final_review(self, *, history=False):
+    def _show_final_review(self):
         self._require_workflow_owner()
+        self._pending_final_item = None
         if not self._workflow_dialog_current(self._final_review_dialog):
             if self._final_review_dialog is not None:
                 self._final_review_dialog.close()
             dialog = FinalReviewDialog(self)
-            dialog.itemRequested.connect(lambda item: self._guard(lambda: self.open_fine_item(item), operation="final-check item"))
-            dialog.typeRequested.connect(lambda ident: self._guard(lambda: self._show_catalogue_review(ident), operation="type card"))
-            dialog.groupRequested.connect(lambda ident: self._guard(lambda: self.open_candidate_group(ident), operation="first-pass gap"))
-            dialog.reviewRequested.connect(lambda ident: self._guard(lambda: self._open_located_review(ident), operation="review gap"))
+            dialog.assessmentRequested.connect(lambda: self._activate_workspace(self._show_assessment))
+            dialog.locationRequested.connect(lambda target: self._guard(
+                lambda: self._open_final_location(target), operation="open outstanding review task"))
             dialog.changed.connect(self._workflow_changed)
             self._final_review_dialog = dialog
-            dialog.tabs.currentChanged.connect(self._sync_workspace_checks)
         dialog = self._final_review_dialog
-        if history:
-            dialog.show_history()
-        elif dialog.history_visible():
-            dialog.tabs.setCurrentIndex(0)
+        dialog.show_overview()
         dialog.show(); dialog.raise_(); dialog.refresh()
         return dialog
 
     def _show_checkpoint_history(self):
-        return self._show_final_review(history=True)
-
-    def _show_catalogue_review(self, type_id=None):
         self._require_workflow_owner()
+        if not self._workflow_dialog_current(self._checkpoint_dialog):
+            if self._checkpoint_dialog is not None:
+                self._checkpoint_dialog.close()
+            self._checkpoint_dialog = FinalReviewDialog(self, history_only=True)
+            self._checkpoint_dialog.changed.connect(self._workflow_changed)
+        dialog = self._checkpoint_dialog
+        dialog.show(); dialog.raise_(); dialog.refresh()
+        return dialog
+
+    def _catalogue_dialog(self):
+        self._require_workflow_owner(stop_audio=False)
         if not self._workflow_dialog_current(self._catalogue_review_dialog):
             if self._catalogue_review_dialog is not None:
                 self._catalogue_review_dialog.close()
@@ -1566,10 +1592,49 @@ class MainWindow(QMainWindow):
             dialog.fineRequested.connect(lambda item: self._guard(lambda: self.open_fine_item(item), operation="fine-review item"))
             dialog.cardSaved.connect(self._workflow_changed)
             self._catalogue_review_dialog = dialog
-        dialog = self._catalogue_review_dialog
-        dialog.show(); dialog.raise_(); dialog.refresh()
-        if type_id is not None:
-            dialog.select_type(type_id)
+        return self._catalogue_review_dialog
+
+    def _show_catalogue_review(self, type_id=None):
+        dialog = self._catalogue_dialog()
+        dialog.refresh()
+        dialog.show_card(type_id)
+        dialog.show(); dialog.raise_()
+        return dialog
+
+    def _representative_target(self, state):
+        """Only confirmed, shared family membership can anchor a card example."""
+        selected = set(self.selected_item_ids)
+        if not state or not selected or not selected.issubset(self._rows) or not selected.issubset(
+                (self._page or {}).get("item_ids", ())):
+            return None, "Select syllables on this audition page."
+        families = [f for f in state.get("memberships", ()) if f.get("parent_type_id") is None
+                    and not selected.isdisjoint(f["member_ids"])]
+        if len(families) != 1 or not selected.issubset(families[0]["member_ids"]):
+            return None, "Select saved members of one human family."
+        family = families[0]["local_type_id"]
+        for item in selected:
+            row = self._rows[item]
+            if row != self._row(item, self._draft_base.get(item)) and (
+                    row.get("disposition") not in {"current", "other", "new_family"}
+                    or row.get("family_id") != family):
+                return None, "Resolve the pending change of family before adding this example."
+        title = state.get("type_cards", {}).get(family, {}).get("title") or family
+        return family, f"Add the selection to the representative examples in the draft definition of {title}."
+
+    def _stage_selected_representatives(self):
+        self._capture_editor()
+        expected, hint = self._representative_target(self.state)
+        if not expected:
+            raise ValueError(hint)
+        dialog = self._catalogue_dialog()
+        family, hint = self._representative_target(self.state)
+        if not family:
+            raise ValueError(hint)
+        if family != expected:
+            raise ValueError("The selected members changed family. Review the current page and try again.")
+        dialog.refresh()
+        dialog.show(); dialog.raise_()
+        dialog.add_representatives(family, tuple(self.selected_item_ids))
         return dialog
 
     def _workflow_dialog_current(self, dialog):
@@ -1590,27 +1655,34 @@ class MainWindow(QMainWindow):
         dialog.show(); dialog.raise_(); dialog.refresh()
         return dialog
 
-    def _show_assessment(self):
+    def _show_assessment(self, job_id=None):
         self._require_workflow_owner()
         if not self._workflow_dialog_current(self._assessment_dialog):
             if self._assessment_dialog is not None:
                 self._assessment_dialog.close()
             dialog = AssessmentDialog(self)
+            dialog.catalogueRequested.connect(
+                lambda job_id: self._activate_workspace(lambda: self._show_catalogue_export(job_id)))
+            dialog.finalChecksRequested.connect(lambda: self._activate_workspace(self._show_final_review))
             dialog.sourceRequested.connect(lambda: self._guard(self._show_source_registry, operation="assessment sources"))
             dialog.directedRequested.connect(lambda value: self._guard(lambda: self._prefill_assessment_question(value), operation="assessment review question"))
             dialog.assessmentChanged.connect(self._workflow_changed)
             self._assessment_dialog = dialog
         dialog = self._assessment_dialog
         dialog.show(); dialog.raise_(); dialog.refresh()
+        if job_id is not None:
+            dialog.open_report(job_id)
         return dialog
 
     def _prefill_assessment_question(self, value):
         """Human-selected diagnostic text is an unsubmitted D2 form, never a review job."""
-        dialog = self._show_catalogue_review(value.get("family_id"))
+        dialog = self._catalogue_dialog()
+        dialog.refresh()
         dialog.prefill_directed_question(value)
+        dialog.show(); dialog.raise_()
         return dialog
 
-    def _show_catalogue_export(self):
+    def _show_catalogue_export(self, assessment_id=None):
         self._require_workflow_owner()
         if not self._workflow_dialog_current(self._catalogue_export_dialog):
             if self._catalogue_export_dialog is not None:
@@ -1618,12 +1690,14 @@ class MainWindow(QMainWindow):
             dialog = ExportDialog(self)
             dialog.changed.connect(self._workflow_changed)
             dialog.scopeRequested.connect(lambda: self._guard(self._show_final_review, operation="catalogue scope and completion"))
-            dialog.assessmentRequested.connect(lambda: self._guard(self._show_assessment, operation="catalogue assessment selection"))
-            dialog.saved.connect(lambda _result: self._status("Catalogue ZIP and manifest saved as one verified package directory."))
+            dialog.assessmentRequested.connect(lambda job_id: self._activate_workspace(lambda: self._show_assessment(job_id)))
+            dialog.saved.connect(lambda _result: self._status("Catalogue ZIP saved and verified."))
             dialog.previewOpened.connect(lambda _result: self._status("Opened the selected verified catalogue HTML with its local assets."))
             self._catalogue_export_dialog = dialog
         dialog = self._catalogue_export_dialog
         dialog.show(); dialog.raise_(); dialog.refresh()
+        if assessment_id is not None:
+            dialog.select_assessment(assessment_id)
         return dialog
 
     def _focus_audition(self):
@@ -1632,9 +1706,89 @@ class MainWindow(QMainWindow):
             self._final_review_dialog.hide()
         self.raise_(); self.activateWindow()
 
-    def _open_located_review(self, review_id):
-        self.open_review_scope(review_id)
-        self._focus_audition()
+    def _open_final_location(self, target):
+        """Follow one outstanding task, using the current owner's live review rounds."""
+        self._require_workflow_owner()
+        kind, ident = target["kind"], target["id"]
+        if kind == "directed":
+            dialog = self._catalogue_dialog()
+            dialog.refresh()
+            dialog.show_directed(ident)
+            dialog.show()
+        elif kind == "type":
+            dialog = self._show_catalogue_review(ident)
+        elif kind == "fine":
+            dialog = self.open_fine_item(ident)
+        elif kind == "tasks":
+            self._show_tasks()
+            dialog = self.task_dialog
+        elif kind in {"group", "pool"}:
+            self.open_candidate_group("pool" if kind == "pool" else ident)
+            return
+        elif kind == "review":
+            review = self.state["batch_review"]["reviews"][ident]
+            if review["status"] in {"queued", "running", "cancel_requested"}:
+                self._show_tasks()
+                dialog = self.task_dialog
+            elif review["status"] == "ready" and not any(review.get(k) for k in ("scope_stale", "archived", "read_only")):
+                self.open_review_scope(ident)
+                self._focus_audition()
+                return
+            elif review["stage"] == "family":
+                self._show_family_reviews(review["family_id"])
+                return
+            else:
+                self.open_candidate_group("pool" if review["stage"] == "pool" else review["group_id"])
+                return
+        elif kind == "item":
+            dialog = self._locate_unfinished_item(ident)
+            if dialog is None:
+                return
+        else:
+            raise ValueError("This task is no longer available. Refresh Final checks.")
+        self._final_review_dialog.stop()
+        self._final_review_dialog.hide()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _locate_unfinished_item(self, item_id):
+        batch = self.state["batch_review"]
+        families = []
+        for family, rid in batch.get("active_family_reviews", {}).items():
+            review = batch["reviews"].get(rid, {})
+            if not review.get("closed") and item_id in review.get("item_ids", ()):
+                families.append("family:" + family)
+        organization = batch.get("organization") or {}
+        group = next((g["group_id"] for g in organization.get("groups", ()) if item_id in g["item_ids"]), None)
+        in_pool = item_id in batch["pool"]["active_ids"]
+        scopes = families + (["pool"] if in_pool else []) + ([group] if group else [])
+        if not scopes and not organization:
+            return self._show_organization_tab()
+        if not scopes:
+            return self.open_fine_item(item_id)
+        for key in scopes:
+            review = self._review_by_id(self._scope_review_id(key))
+            if self._page_for_final_item(review, item_id):
+                self._pending_final_item = (key, item_id)
+                self.open_review_scope(review["review_id"])
+                self._focus_audition()
+                return
+        key = scopes[0]
+        if key.startswith("family:"):
+            self._show_family_reviews(key.removeprefix("family:"))
+        else:
+            self.open_candidate_group(key)
+        self._pending_final_item = (key, item_id)
+        instruction = ("Use More → Prepare again… to include it in a new round."
+                       if self._review().get("pages") else "Choose Prepare group to open its review page.")
+        self._status(f"{item_id} needs review. {instruction}")
+
+    @staticmethod
+    def _page_for_final_item(review, item_id):
+        if review.get("status") != "ready" or any(review.get(k) for k in (
+                "closed", "read_only", "scope_stale", "archived", "audition_only")) or item_id in review.get("item_locks", {}):
+            return None
+        return next((page["page_id"] for page in review["pages"] if item_id in page["item_ids"]), None)
 
     def _open_directed_review(self, review_id):
         self.open_review_scope(review_id)
@@ -1822,7 +1976,8 @@ class MainWindow(QMainWindow):
             self._rendering = rendering
 
     def _retire_workflow_views(self, reason):
-        for name in ("_pool_review_dialog", "_final_review_dialog", "_catalogue_review_dialog",
+        self._pending_final_item = None
+        for name in ("_pool_review_dialog", "_final_review_dialog", "_checkpoint_dialog", "_catalogue_review_dialog",
                      "_source_registry_dialog", "_assessment_dialog", "_catalogue_export_dialog"):
             dialog = getattr(self, name)
             if dialog is None:
@@ -2574,6 +2729,8 @@ class MainWindow(QMainWindow):
 
     def _navigate_tree_data(self, data, *, reload_page=False):
         key = self._tree_scope_key(data)
+        if self._pending_final_item and (self._pending_final_item[0] != key or data.get("kind") == "page"):
+            self._pending_final_item = None
         if key is None:
             self._restore_group_highlight()
             return
@@ -2692,7 +2849,14 @@ class MainWindow(QMainWindow):
             return
         review = self._review()
         if review.get("status") == "ready" and review.get("pages"):
-            self._load_page(review["pages"][0]["page_id"], expected_review_id=self.selected_review_id, rollback=rollback)
+            target = None
+            if self._pending_final_item and self._pending_final_item[0] == self.selected_group:
+                target = self._page_for_final_item(review, self._pending_final_item[1])
+            if not target and self._directed_editor() and not review.get("closed"):
+                saved = review.get("decisions", {})
+                target = next((page["page_id"] for page in review["pages"]
+                               if any(item not in saved for item in page["item_ids"])), None)
+            self._load_page(target or review["pages"][0]["page_id"], expected_review_id=self.selected_review_id, rollback=rollback)
 
     def prepare_selected(self, *, reason="", use_exception=False):
         if not self.project or self._busy or self._close_coordinator.state != "open" or self._sampling_pending:
@@ -2780,7 +2944,7 @@ class MainWindow(QMainWindow):
         controller = FamilyReviewController()
         scope = controller.select(project, family_id, snapshot=state, generation=generation)["scope"]
         if scope["directed_review_managed_elsewhere"]:
-            raise ValueError("Continue the existing directed review from Type definitions and directed review.")
+            raise ValueError("Continue the existing directed review from Workspace → Type definitions.")
         if scope["can_continue"] and not use_exception:
             self._refresh()
             return
@@ -3011,6 +3175,11 @@ class MainWindow(QMainWindow):
         self._update_slot_labels()
         self.slot_list.blockSignals(False)
         self.selected_item_id = None
+        if self._pending_final_item and self._pending_final_item[0] == self.selected_group:
+            item = self._pending_final_item[1]
+            if self._page_for_final_item(self._review(), item) == page_id:
+                self.selected_item_id = item
+                self._pending_final_item = None
         self._update_header()
         self._sync_item_selection()
         self._render_editor()
@@ -3322,7 +3491,7 @@ class MainWindow(QMainWindow):
     def _save_drafts(self):
         if self._fine_review_dialog is not None and self._fine_review_dialog.project is self.project:
             self._fine_review_dialog.save_draft()
-        for dialog in (self._pool_review_dialog, self._final_review_dialog, self._catalogue_review_dialog,
+        for dialog in (self._pool_review_dialog, self._final_review_dialog, self._checkpoint_dialog, self._catalogue_review_dialog,
                        self._source_registry_dialog, self._assessment_dialog, self._catalogue_export_dialog):
             if dialog is not None and dialog.project is self.project and hasattr(dialog, "save_draft"):
                 dialog.save_draft()
@@ -3975,7 +4144,7 @@ class MainWindow(QMainWindow):
             # choice and scope inspection when C is explicitly opened again.
             self._pool_review_dialog.exception.setChecked(False)
             self._pool_review_dialog.stop()
-        for dialog in (self._final_review_dialog, self._catalogue_review_dialog,
+        for dialog in (self._final_review_dialog, self._checkpoint_dialog, self._catalogue_review_dialog,
                        self._source_registry_dialog, self._assessment_dialog, self._catalogue_export_dialog):
             if dialog is not None:
                 dialog._owner_transition_invalidated = True
