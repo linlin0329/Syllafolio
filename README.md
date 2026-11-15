@@ -19,8 +19,8 @@ Double-click the installer and choose **Install**. Open **Syllafolio** from the 
 ## Try Syllafolio with example audio
 
 To try Syllafolio with real bird recordings, download
-`Syllafolio-example-audio-180-syllables-v1.0.0.zip` from
-[Zenodo](https://doi.org/10.5281/zenodo.24213511). It contains 180 Eurasian
+[Syllafolio-example-audio-180-syllables-v1.1.0.zip](https://zenodo.org/records/24251362/files/Syllafolio-example-audio-180-syllables-v1.1.0.zip?download=1) from
+[Zenodo](https://doi.org/10.5281/zenodo.24251362). It contains 180 Eurasian
 tree sparrow syllables and the 26 recording excerpts they came from.
 The syllables open without preassigned type labels, so you can listen,
 compare spectrograms and make your own annotations.
@@ -71,4 +71,4 @@ The tests generate a signal in memory to exercise acoustic feature extraction. S
 
 Syllafolio's original application code is licensed under the [MIT License](LICENSE). Copyright (c) 2026 Zhaocun Lin.
 
-Third-party components retain their respective licenses. The [Zenodo example audio and its metadata](https://doi.org/10.5281/zenodo.24213511) are available under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+Third-party components retain their respective licenses. The [Zenodo example audio and its metadata](https://doi.org/10.5281/zenodo.24251362) are available under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
