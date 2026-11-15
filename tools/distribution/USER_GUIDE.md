@@ -1,6 +1,8 @@
 # Syllafolio user guide
 
-Version **1.0.2** uses the supplied application source and hash-locked dependencies. It starts with an empty workspace and includes no business samples, demonstration projects or acceptance datasets. Build evidence and actual Windows acceptance are separate. Audibility, human type criteria and scientific validity require the actual user to check them.
+Version **1.0.3** uses the supplied application source and hash-locked dependencies. It starts with an empty workspace and includes no business samples, demonstration projects or acceptance datasets. Build evidence and actual Windows acceptance are separate. Audibility, human type criteria and scientific validity require the actual user to check them.
+
+New projects use the revised seven-band spectral contrast calculation. Opening an older project preserves its frozen features, candidate groups and saved review decisions. Re-import the audio into a separate new project to compare groupings with the revised calculation.
 
 ## Start and use your own project
 

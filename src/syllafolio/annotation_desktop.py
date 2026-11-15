@@ -56,6 +56,7 @@ from .annotation_desktop_export import ExportDialog
 from .annotation_desktop_review_media import DisplayController, DisplayControlsWidget, ReviewMediaDialog
 from .annotation_desktop_page_settings import ReviewPageSettings
 from .annotation_desktop_interval_import import IntervalImportDialog
+from .annotation_desktop_project_picker import ProjectFolderDialog
 
 
 DISPOSITIONS = [
@@ -206,6 +207,7 @@ class MainWindow(QMainWindow):
         self._job_signature = None
         self._task_issue_seen = set()
         self.project_details_dialog = None
+        self._project_picker = None
         self._pending_refresh = False
         self._sampling_pending = False
         self._cancel_requests = None
@@ -732,6 +734,8 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.status_label = QLabel("Ready. No project is open.")
         self.status_label.setObjectName("statusLabel")
+        self.status_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.status_label.setWordWrap(True)
         self.statusBar().addWidget(self.status_label, 1)
         help_action = QAction("About this development preview…", self)
@@ -990,6 +994,7 @@ class MainWindow(QMainWindow):
 
     def _status(self, text, error=False):
         self.status_label.setText(system_text(str(text)))
+        self.status_label.setToolTip("")
         self.status_label.setStyleSheet("color:#a34838;" if error else "color:#315d68;")
 
     def _diagnostic_context(self):
@@ -1066,8 +1071,18 @@ class MainWindow(QMainWindow):
             "SNAPSHOT_PENDING": "A consistent state sample is pending. Keep the current input; wait for the owner operation or return to the workspace.",
         }.get(code, system_error(error))
         english = english.removeprefix(f"{code}: ")
-        self._status(f"{code}: {english}", error=True)
-        self.operationFailed.emit(f"{code}: {english}")
+        detail = f"{code}: {english}"
+        lines = detail.splitlines()
+        if len(lines) > 1 or len(detail) > 240:
+            if isinstance(error, shutil.Error) and error.args and isinstance(error.args[0], list):
+                summary = f"Copy failed on {len(error.args[0])} entries."
+            else:
+                summary = lines[0][:200] + "…"
+            self._status(summary + " See the diagnostic log for details.", error=True)
+            self.status_label.setToolTip(str(self.diagnostics.path))
+        else:
+            self._status(detail, error=True)
+        self.operationFailed.emit(detail)
 
     def _run(self, label, function, success=None, *, kind="foreground"):
         if self._busy or self._close_coordinator.state != "open":
@@ -2072,9 +2087,22 @@ class MainWindow(QMainWindow):
         self.display_action.setToolTip(self.display_info.text())
 
     def _open_dialog(self):
-        path = QFileDialog.getExistingDirectory(self, "Open Syllafolio desktop project (use a backup copy for P5)")
-        if path:
-            self.open_project_path(path)
+        if self._project_picker is not None:
+            self._project_picker.raise_()
+            return
+        start = self.project.project_dir.parent if self.project else Path(os.environ.get("SYLLAFOLIO_PROJECTS_DIR", Path.home()))
+        dialog = ProjectFolderDialog(self, start)
+        self._project_picker = dialog
+
+        def finished(result):
+            self._project_picker = None
+            path = dialog.selected_project
+            dialog.deleteLater()
+            if result == QDialog.DialogCode.Accepted and path is not None:
+                self._guard(lambda: self.open_project_path(path), operation="open selected project")
+
+        dialog.finished.connect(finished)
+        dialog.open()
 
     def _backup_dialog(self):
         source = QFileDialog.getExistingDirectory(self, "Choose a closed project to back up")
@@ -2140,12 +2168,8 @@ class MainWindow(QMainWindow):
             self._status("Review media preferences could not be loaded; their original bytes are retained.", True)
         self.canvas.set_waveform_range(self.display_controller.waveform_range)
         self._update_display_info()
-        self._rows = {}
-        self._new_families = {}
-        self._dirty = False
-        self._page = None
-        self._page_key = None
-        self.selected_group = self.selected_review_id = self.selected_page_id = self.selected_item_id = None
+        self.selected_group = self.selected_review_id = None
+        self._clear_review_page()
         self._queue_signature = self._pages_signature = None
         self._expanded_review_sections.clear()
         self._draft_store = {}
@@ -2178,7 +2202,6 @@ class MainWindow(QMainWindow):
                     message = ("Draft not loaded; a recovery copy could not be written. The original is retained. "
                                "New drafts will not overwrite it until a backup can be created.")
                 self._show_draft_warning(message)
-        self.canvas.clear()
         self._refresh()
         if self._draft_source_issue:
             self._status("Project opened with a draft warning. No draft was restored; see the warning above.", True)
@@ -3994,6 +4017,14 @@ class MainWindow(QMainWindow):
             self.state = None
             self._foreground = None
             self._sampling_pending = False
+            if not pending["closing_window"]:
+                # Also retire the previous page when opening the replacement
+                # fails. No controls should retain a released owner's media.
+                self._cancel_tree_navigation()
+                self.selected_group = self.selected_review_id = None
+                self._clear_review_page()
+                self.group_list.clear()
+                self.current_family.clear()
             self._close_coordinator.finish()
             self._transition = None
             if pending["closing_window"]:

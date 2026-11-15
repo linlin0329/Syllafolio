@@ -1,12 +1,11 @@
-"""Unchanged numerical feature methods used by desktop import; no table/corpus IO."""
-import warnings
+"""Numerical feature methods for desktop import from in-memory PCM."""
 from typing import List
 
 import numpy as np
 import librosa
 from skimage.transform import resize
 
-from .config import Config
+from .config import Config, spectral_contrast_parameters
 
 
 class AudioProcessor:
@@ -196,17 +195,11 @@ class AudioProcessor:
             features.append(np.std(spectral_flatness))
             
             # 频谱对比度 (Spectral Contrast)
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                try:
-                    spectral_contrast = librosa.feature.spectral_contrast(
-                        y=waveform, sr=sr, n_fft=cfg.n_fft, hop_length=cfg.hop_length,
-                        fmin=audio_cfg.freq_min
-                    )
-                    features.extend(np.mean(spectral_contrast, axis=1))
-                except:
-                    # 如果频谱对比度计算失败，填充零
-                    features.extend([0] * 7)
+            spectral_contrast = librosa.feature.spectral_contrast(
+                y=waveform, sr=sr, n_fft=cfg.n_fft, hop_length=cfg.hop_length,
+                **spectral_contrast_parameters(sr, cfg.n_fft)
+            )
+            features.extend(np.mean(spectral_contrast, axis=1))
         
         # ========== 4. 时域特征 ==========
         if "temporal" in cfg.feature_types:

@@ -6,6 +6,7 @@ import hashlib
 import os
 from pathlib import Path
 import shutil
+import tempfile
 import uuid
 
 from .annotation_file_lock import OwnerFileLock
@@ -17,6 +18,47 @@ from .annotation_desktop_project import (
 
 
 RECEIPT_FILENAME = ".syllafolio-backup.json"
+
+
+def _filesystem_path(path):
+    """Use Win32 extended paths for descendants, including on shares."""
+    if os.name != "nt":
+        return path
+    value = str(path)
+    if value.startswith("\\\\?\\"):
+        return path
+    if value.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + value[2:])
+    return Path("\\\\?\\" + value)
+
+
+def _check_destination_length(target, staging, identity):
+    """A published copy must also be readable by ordinary Windows project I/O."""
+    if os.name != "nt":
+        return
+    def wchar_count(path):
+        return len(str(path).encode("utf-16-le")) // 2
+
+    longest = max(wchar_count(target / relative)
+                  for relative in (*identity["files"], *identity["directories"]))
+    if longest < 260:
+        return
+    # Long-path policy varies across Windows installations. Check how this
+    # process actually accesses files on the destination volume. Only the
+    # short-lived probe uses the extended namespace to create its parents.
+    with tempfile.TemporaryDirectory(dir=staging) as temporary:
+        folder = Path(temporary)
+        probe = folder / "test"
+        ordinary = target.parent / probe.relative_to(staging.parent)
+        while wchar_count(ordinary) < 260:
+            folder /= "p" * 48
+            probe = folder / "test"
+            ordinary = target.parent / probe.relative_to(staging.parent)
+        folder.mkdir(parents=True, exist_ok=True)
+        probe.touch()
+        _require(ordinary.is_file(), "BACKUP_PATH_LENGTH",
+                 f"The longest path in this copy would be {longest} characters. "
+                 "Choose a shorter folder name or a location closer to the drive root so this Windows installation can reopen the project.")
 
 
 def _locked_bytes(owner):
@@ -71,10 +113,15 @@ def backup_project(source_dir, destination_dir):
     No SQLite connection or annotation service is created against the source.
     """
     source_requested, target_requested = Path(source_dir).expanduser(), Path(destination_dir).expanduser()
-    _reject_link_ancestors(source_requested)
-    _reject_link_ancestors(target_requested)
-    _require(source_requested.is_dir(), "PROJECT_DIRECTORY", 'The source project directory does not exist.')
-    source, target = source_requested.resolve(), target_requested.resolve()
+    for requested in (source_requested, target_requested):
+        _reject_link_ancestors(requested)
+        if os.name == "nt":
+            # Check deep junctions before resolve() can follow them. A plain
+            # Win32 lstat may report a long, existing descendant as missing.
+            _reject_link_ancestors(_filesystem_path(Path(os.path.abspath(requested))))
+    source_display, target_display = source_requested.resolve(), target_requested.resolve()
+    source, target = _filesystem_path(source_display), _filesystem_path(target_display)
+    _require(source.is_dir(), "PROJECT_DIRECTORY", 'The source project directory does not exist.')
     _require(not target.exists() and not target.is_symlink(), "PROJECT_EXISTS", 'The backup destination already exists. Choose a new destination.')
     _require(not target.is_relative_to(source) and not source.is_relative_to(target),
              "PROJECT_LOCATION", 'Choose a backup destination outside the original project; neither directory may contain the other.')
@@ -92,14 +139,15 @@ def backup_project(source_dir, destination_dir):
             before = _tree_identity(source, owner=owner)
             target.parent.mkdir(parents=True, exist_ok=True)
             _reject_link_ancestors(target.parent)
-            staging = target.parent / ("." + target.name + ".backup-" + uuid.uuid4().hex)
+            staging = Path(tempfile.mkdtemp(prefix=".syllafolio-backup-", dir=target.parent))
+            _check_destination_length(target_display, staging, before)
             def copy_under_lock(src, dst):
                 if Path(src) == owner.path:
                     Path(dst).write_bytes(_locked_bytes(owner))
                     shutil.copystat(src, dst, follow_symlinks=False)
                     return str(dst)
                 return _copy_file(src, dst)
-            shutil.copytree(source, staging, copy_function=copy_under_lock)
+            shutil.copytree(source, staging, copy_function=copy_under_lock, dirs_exist_ok=True)
             _require(_tree_identity(staging) == before, "BACKUP_COPY_MISMATCH", 'The backup files or directory structure differ from the source.')
             _validate_marker(staging)
             # Contract/state verification reads another detached SQLite copy;
@@ -115,7 +163,7 @@ def backup_project(source_dir, destination_dir):
             _require(_tree_identity(source, owner=owner) == before, "INPUT_CHANGED", 'The source project changed during copying. The backup was not published.')
             receipt = {"schema_version": "syllafolio-offline-backup-v1", "created_at": _utc(),
                        "project_id": marker["project_id"], "run_id": marker["run_id"],
-                       "source_project": str(source), "destination_project": str(target),
+                       "source_project": str(source_display), "destination_project": str(target_display),
                        "owner_lock_held": True, "service_constructed": False,
                        "source_files_changed": False, "includes_sqlite_wal_and_shm": True,
                        "identity": before}
@@ -127,12 +175,12 @@ def backup_project(source_dir, destination_dir):
             # os.rename refuses an existing directory on Windows. Never replace it.
             os.rename(staging, target)
             staging = None
-            return {**receipt, "receipt_path": str(target / receipt_name), "project_dir": str(target)}
+            return {**receipt, "receipt_path": str(target_display / receipt_name), "project_dir": str(target_display)}
     finally:
         if staging is not None and staging.exists():
             resolved = staging.resolve()
             # Cleanup is confined to this generated staging sibling, never source/target.
-            _require(resolved.parent == target.parent and resolved.name.startswith("." + target.name + ".backup-")
+            _require(resolved == staging and resolved.parent == target.parent
                      and resolved != source and resolved != target and not _is_link(staging),
                      "BACKUP_CLEANUP_PATH", 'The temporary backup directory did not match its recorded identity. It was preserved for inspection.')
             shutil.rmtree(resolved)

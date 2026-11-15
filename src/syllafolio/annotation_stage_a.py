@@ -20,10 +20,13 @@ import soundfile as sf
 
 from . import ei_b_assistance as assistance
 from .acoustics import bandpass as bp
+from .acoustics.config import spectral_contrast_parameters
 
 SOURCE_SCHEMA = "annotation-segments-v1"
 PROVENANCE_SCHEMA = "annotation-stage-a-provenance-v1"
 PRESET_ID = "stage-a-existing-105d-umap10-hdbscan-leaf-v1"
+LEGACY_FEATURE_RECIPE = "stage-a-existing105-logmel64x32-v1"
+FEATURE_RECIPE = "stage-a-105-logmel64x32-contrast-v2"
 LIMITS = {"max_items": 5000, "max_total_audio_bytes": 2 * 1024 * 1024 * 1024,
           "minimum_sample_rate_hz": 32000, "minimum_frames": 8,
           "maximum_segment_seconds": 30.0}
@@ -395,13 +398,14 @@ def bandpass_metadata(settings, rate):
             **params}
 
 
-def _versions(fingerprint, processing=None):
+def _versions(fingerprint, processing=None, *, feature_recipe=FEATURE_RECIPE):
     suffix = fingerprint[:20]
     audio_suffix = _hash({"source": fingerprint, "processing": processing})[:20] if processing else suffix
+    global_prefix = "stage-a-global-" if feature_recipe == LEGACY_FEATURE_RECIPE else "stage-a-global-contrast-v2-"
     return {"material_version": "stage-a-material-" + audio_suffix,
             "boundary_version": "stage-a-frames-" + suffix,
-            "feature_version": "stage-a-existing105-logmel64x32-v1" + ("-bandpass-" + _hash(processing)[:20] if processing else ""),
-            "global_representation_version": "stage-a-global-" + audio_suffix}
+            "feature_version": feature_recipe + ("-bandpass-" + _hash(processing)[:20] if processing else ""),
+            "global_representation_version": global_prefix + audio_suffix}
 
 
 def _candidate_payload(scaled, labels, probabilities, ids, versions, fit_status):
@@ -566,6 +570,8 @@ def _prepare_stage_a(source_dir, output_dir, progress, cancelled, plan_only, scr
                   "parameters": copy.deepcopy(assistance.PARAMETERS),
                   "input_versions": versions, "source_fingerprint": plan["source_fingerprint"],
                   "feature_parameters": {"audio": vars(config.audio), "feature": vars(config.feature),
+                                         "spectral_contrast": spectral_contrast_parameters(
+                                             config.audio.sample_rate, config.feature.n_fft),
                                          "zero_padding": "existing_extractors_pad_short_input_to_n_fft",
                                          "legacy_duration_filters_applied": False,
                                          "import_maximum_segment_seconds": LIMITS["maximum_segment_seconds"]},
@@ -629,9 +635,19 @@ def _validate_stage_a(output_dir, scratch, cancelled=None):
     if processing is not None:
         _require(isinstance(processing, dict), "OUTPUT_VERSION", "Invalid saved audio filter settings.")
         params = {k: processing.get(k) for k in ("low_hz", "high_hz", "order")}
-        _require(processing == bandpass_metadata(params, frozen["sample_rate_hz"]) and
-                 provenance["input_versions"] == _versions(frozen["source_fingerprint"], processing),
-                 "OUTPUT_VERSION", "The saved band-pass settings do not match the project input versions.")
+        _require(processing == bandpass_metadata(params, frozen["sample_rate_hz"]),
+                 "OUTPUT_VERSION", "The saved band-pass settings do not match the project sample rate.")
+    feature_params = provenance["feature_parameters"]
+    recipe = LEGACY_FEATURE_RECIPE
+    if "spectral_contrast" in feature_params:
+        recipe = FEATURE_RECIPE
+        _require(feature_params["spectral_contrast"] == spectral_contrast_parameters(
+                     frozen["sample_rate_hz"], feature_params["feature"]["n_fft"]),
+                 "OUTPUT_VERSION", "The saved spectral contrast parameters do not match the feature recipe.")
+    expected_versions = _versions(frozen["source_fingerprint"], processing, feature_recipe=recipe)
+    _require(provenance["input_versions"] == expected_versions and
+             all(manifest.get(key) == value for key, value in expected_versions.items()),
+             "OUTPUT_VERSION", "The frozen input versions do not match the saved feature recipe.")
     _require(ids == manifest["global_fit_ids"] == manifest["feature_item_ids"]
              == provenance["fit_item_ids"] and len(ids) == len(set(ids)) == frozen["item_count"],
              "OUTPUT_IDENTITY", "The global fit members do not cover the complete input.")

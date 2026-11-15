@@ -3,6 +3,14 @@ from dataclasses import dataclass, field
 from typing import List
 
 
+def spectral_contrast_parameters(sample_rate, n_fft):
+    """Six octave boundaries and an open-ended seventh band up to Nyquist."""
+    # 250 Hz puts the last boundary at 8 kHz, below Nyquist even at 32 kHz.
+    # At very high rates keep at least two usable FFT bins in the lowest band.
+    return {"fmin": max(250.0, 2.0 * sample_rate / n_fft), "n_bands": 6,
+            "quantile": 0.02, "linear": False}
+
+
 @dataclass
 class AudioConfig:
     """音频处理参数"""
